@@ -5,7 +5,6 @@
 #include <logging.hpp>
 
 #include "boot/limine_definitions.hpp"
-#include "cpp/time.hpp"
 
 void Trampoline(limine_mp_info* info) {
     piru::kernel::GetInstance().CpuInit(info->lapic_id);
@@ -57,11 +56,11 @@ namespace piru {
 
         CpuInit(_bsp);
 
-        asm volatile ("sti");
-
-        while (true) {
+        while (_initializedCount < _cpuCount) {
             asm ("pause"); // park
         }
+
+        LOG_INFO("All {} CPUs initialized successfully", _cpuCount);
     }
 
     // Runs per core
@@ -81,40 +80,21 @@ namespace piru {
 
         LOG_DEBUG("CPU with ID: {} initialized successfully", cpuId);
 
-        if (cpuId == _bsp) {
-            auto vector = data.idt.AllocateVector();
+        auto flags = _initLock.lock(false);
+        _initializedCount++;
+        _initLock.unlock(flags);
 
-            data.idt.RegisterIRQHandler(vector, [](interrupts::idt::registers* regs) {
-                kernel::GetInstance().data.time.Tick();
-                kernel::GetInstance().data.framebuffer.Write(ANSI::EscapeCodes::ClearLine);
+        if (cpuId != _bsp) {
+            asm volatile ("sti");
 
-                auto time = piru::time::GetUnixTimestamp();
-                auto date = time::GetDateForTimestamp(time);
-                auto year = date.year;
-                auto month = time::GetMonthName(date.month);
-                auto day = date.day;
-                auto hour = date.hour;
-                auto minute = date.minute;
-                auto second = date.second;
-
-                fmt::format([](const char* string, size_t size) {
-                    auto fb = kernel::GetInstance().data.framebuffer;
-                    fb.Write((const uint8_t*)string, size);
-                }, "{}-{}-{} {}:{}:{}", year, month, day, hour, minute, second);
-            });
-
-            cpus[cpuId].apic.SetLvtTimer(vector, interrupts::TimerDivide::By1, true, data.time.GetApicFrequency());
-        }
-
-        asm volatile ("sti");
-
-        while (true) {
-            asm ("pause"); // park
+            while (true) {
+                asm ("hlt"); // park
+            }
         }
     }
 
     void kernel::InitializeSubsystems() {
-
+        data.subsystem_manager.Initialize();
     }
 
     void kernel::Start() {

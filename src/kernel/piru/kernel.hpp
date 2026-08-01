@@ -14,6 +14,7 @@
 #include "memory/paging.hpp"
 #include "memory/physical_memory_manager.hpp"
 #include "core/time.hpp"
+#include "core/subsystem_manager.hpp"
 
 namespace piru {
     class kernel {
@@ -36,6 +37,7 @@ namespace piru {
             core::acpi acpi{paging};
             interrupts::ioapic_manager ioapic_manager{paging, acpi};
             core::time time{cpu};
+            core::subsystem_manager subsystem_manager{};
         };
 
         // per cpu core
@@ -54,6 +56,8 @@ namespace piru {
         uint32_t _bsp{};
         uint32_t _cpuIds[system::MaxCpuCount]{};
         size_t _cpuCount{1};
+        size_t _initializedCount{0};
+        threading::spinlock _initLock{};
     };
 } // piru
 
