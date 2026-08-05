@@ -98,7 +98,10 @@ namespace piru {
     }
 
     void kernel::Start() {
-
+        auto a = new int(10);
+        *a = 12;
+        LOG_DEBUG("Kernel started successfully, allocated int with value: {}", *a);
+        delete a;
     }
 
     struct kernel::cpu &kernel::GetCpu() {

@@ -7,6 +7,67 @@
 
 #include "logging.hpp"
 
+namespace {
+    piru::subsystems::heap_allocator::state *_cppNewState = nullptr;
+
+    struct AllocationHeader {
+        size_t totalSize;
+        uint32_t magic;
+    };
+
+    static constexpr uint32_t ALLOC_MAGIC = 0xDEADC0DE;
+    static constexpr size_t HEADER_SIZE = (sizeof(AllocationHeader) + 15) & ~15; // Aligned to 16 bytes.
+
+    uintptr_t SizedNewAllocate(size_t bytes) {
+        size_t actualBytes = bytes + HEADER_SIZE;
+
+        uintptr_t raw = (uintptr_t)_cppNewState->Allocate(actualBytes, 16);
+        if (!raw)
+            return 0;
+
+        auto *header = reinterpret_cast<AllocationHeader*>(raw);
+        header->totalSize = actualBytes;
+        header->magic = ALLOC_MAGIC;
+        return (uintptr_t)(raw + HEADER_SIZE);
+    }
+
+    void FreeWithHeader(void* ptr) {
+        if (!ptr) return;
+
+        uintptr_t rawAddr = reinterpret_cast<uintptr_t>(ptr) - HEADER_SIZE;
+        auto *header = reinterpret_cast<AllocationHeader*>(rawAddr);
+        if (header->magic != ALLOC_MAGIC)
+            PANIC("Invalid magic number in allocation header. Possible double free or memory corruption.");
+
+        header->magic = 0; // Invalidate the magic number to prevent double free.
+        _cppNewState->Free((void*)rawAddr, header->totalSize);
+    }
+}
+
+void* operator new (size_t size){
+    return reinterpret_cast<void*>(SizedNewAllocate(size));
+}
+
+void* operator new[](size_t size){
+    return reinterpret_cast<void*>(SizedNewAllocate(size));
+}
+
+void operator delete(void* ptr, size_t size) noexcept {
+    FreeWithHeader(ptr);
+}
+
+void operator delete(void* ptr) noexcept {
+    FreeWithHeader(ptr);
+}
+
+void operator delete[](void* ptr) noexcept {
+    FreeWithHeader(ptr);
+}
+
+void operator delete[](void* ptr, size_t size) noexcept {
+    FreeWithHeader(ptr);
+}
+
 namespace piru::subsystems {
     heap_allocator::slab_allocator::slab_allocator() {
         const auto pageState = piru::kernel::GetInstance().GetCpu().pageState;
@@ -371,6 +432,7 @@ namespace piru::subsystems {
     }
 
     Result heap_allocator::Initialize() {
+        _cppNewState = CreateState("kernel_cpp_new");
         return Result::SUCCESS;
     }
 
@@ -411,4 +473,3 @@ namespace piru::subsystems {
         _heapState.Free(current, sizeof(state_list));
     }
 } // heap_allocator
-
