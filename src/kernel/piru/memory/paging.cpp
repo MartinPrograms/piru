@@ -36,7 +36,11 @@ namespace piru::memory {
         if (vaddr & (system::PageSize - 1)) PANIC("Virtual address is not page-aligned!");
         if (paddr & (system::PageSize - 1)) PANIC("Physical address is not page-aligned!");
 
-        threading::spinlock::scoped_lock lock(state->lock, true);
+        auto &targetLock = state->lock;
+        if (vaddr >= system::EndOfCanonical)
+            targetLock = _lock;
+
+        threading::spinlock::scoped_lock lock(targetLock, true);
 
         auto offset = boot::limine::hhdm_request.response->offset;
 
@@ -87,7 +91,11 @@ namespace piru::memory {
     }
 
     void paging::UnmapPage(state *state, uint64_t vaddr) {
-        threading::spinlock::scoped_lock lock(state->lock, true);
+        auto &targetLock = state->lock;
+        if (vaddr >= system::EndOfCanonical)
+            targetLock = _lock;
+
+        threading::spinlock::scoped_lock lock(targetLock, true);
 
         // Reverse of the mapping process, but we also need to check if the page tables are present at each level and panic if we try to unmap an address that isn't mapped
         uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
@@ -146,7 +154,10 @@ namespace piru::memory {
     }
 
     uint64_t paging::GetPhysicalAddress(state *state, uint64_t vaddr) {
-        threading::spinlock::scoped_lock lock(state->lock, true);
+        auto &targetLock = state->lock;
+        if (vaddr >= system::EndOfCanonical)
+            targetLock = _lock;
+        threading::spinlock::scoped_lock lock(targetLock, true);
 
         uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
         ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
