@@ -4,6 +4,8 @@
 #include "subsystem.hpp"
 #include "cpp/string_view.hpp"
 #include "cpp/spinlock.hpp"
+#include "memory/paging.hpp"
+#include "memory/physical_memory_manager.hpp"
 
 namespace piru::subsystems {
     struct heap_allocator {
@@ -89,8 +91,12 @@ namespace piru::subsystems {
             slab_allocator();
             ~slab_allocator();
 
-            slab *AllocateSlab(size_t sizeClass);
-            void FreeSlab(slab *slab);
+            static memory::paging::available_virtual_address_range GetVirtualAddress(
+                memory::paging::state *pageState, bool higherHalf,
+                memory::paging *paging);
+
+            slab *AllocateSlab(size_t sizeClass, memory::paging::state *pageState, bool higherHalf);
+            void FreeSlab(slab *slab, memory::paging::state *pageState);
 
         private:
             slab *_memory;
@@ -116,10 +122,13 @@ namespace piru::subsystems {
         private:
             friend heap_allocator;
 
-            state(string_view name);
+            state(string_view name, memory::paging::state* pageState, bool higherHalf);
             ~state(); // destroys ALL allocated memory, for this pool/state
 
             string_view _name;
+            memory::paging::state* _pageState;
+            bool _higherHalf;
+
             slab_allocator _slabAllocator;
             slab *_smallAllocations[8]{}; // 16, 32, 64, 128, 256, 512, 1024, 2048
             threading::spinlock _smallAllocationsLock[8]{};
@@ -144,11 +153,11 @@ namespace piru::subsystems {
 
         Result Initialize();
 
-        state* CreateState(string_view name);
+        state* CreateState(string_view name, piru::memory::paging::state* pageState, bool higherHalf);
         void DestroyState(state* state);
 
     private:
-        state _heapState{"heap_allocator"}; // this is the heap, for allocating states, that get handed out.
+        state _heapState; // this is the heap, for allocating states, that get handed out.
 
         struct state_list {
             state_list *next;

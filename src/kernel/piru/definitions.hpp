@@ -31,6 +31,7 @@ namespace piru::system {
     constexpr inline uint64_t KernelOffset = 0xFFFFFFFF80000000;
     constexpr inline size_t PageSize = 0x1000;
     constexpr inline size_t MaxIOAPICs = 50;
+    constexpr inline uint64_t EndOfCanonical = 0x00007FFFFFFFFFFF;
 
     extern volatile uintptr_t *StackBottom;
     extern volatile uintptr_t *StackTop;

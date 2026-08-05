@@ -112,13 +112,22 @@ namespace piru::subsystems {
         }
     }
 
-    heap_allocator::slab *heap_allocator::slab_allocator::AllocateSlab(size_t sizeClass) {
-        const auto pageState = piru::kernel::GetInstance().GetCpu().pageState;
+    memory::paging::available_virtual_address_range heap_allocator::slab_allocator::GetVirtualAddress(memory::paging::state *pageState, bool higherHalf, memory::paging * const paging) {
+        memory::paging::available_virtual_address_range virt{};
+        if (higherHalf)
+            virt = paging->FindAvailableVirtualAddressRangeKernel(1);
+        else
+            virt = paging->FindAvailableVirtualAddressRange(pageState, 1 * constants::MiB, system::EndOfCanonical, 1);
+        return virt;
+    }
+
+    heap_allocator::slab *heap_allocator::slab_allocator::AllocateSlab(size_t sizeClass, memory::paging::state *pageState, bool higherHalf) {
         const auto pmm = &piru::kernel::GetInstance().data.pmm;
         const auto paging = &piru::kernel::GetInstance().data.paging;
 
         auto page = (void*)pmm->Allocate(1);
-        auto virt = paging->FindAvailableVirtualAddressRangeKernel(1);
+        memory::paging::available_virtual_address_range virt = GetVirtualAddress(pageState, higherHalf, paging);
+
         paging->MapPage(pageState, (uint64_t)virt.start, (uint64_t)page, memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
 
         auto current = _memory;
@@ -126,6 +135,7 @@ namespace piru::subsystems {
             if (current->next)
                 current = current->next;
 
+            // This one remains on the kernel address range, since the slab headers, are kernel data.
             auto newPage = pmm->Allocate(1);
             auto newVirt = paging->FindAvailableVirtualAddressRangeKernel(1);
             paging->MapPage(pageState, (uint64_t)virt.start, (uint64_t)newPage, memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
@@ -155,8 +165,7 @@ namespace piru::subsystems {
         return s;
     }
 
-    void heap_allocator::slab_allocator::FreeSlab(slab *slab) {
-        const auto pageState = piru::kernel::GetInstance().GetCpu().pageState;
+    void heap_allocator::slab_allocator::FreeSlab(slab *slab, memory::paging::state *pageState) {
         const auto pmm = &piru::kernel::GetInstance().data.pmm;
         const auto paging = &piru::kernel::GetInstance().data.paging;
 
@@ -207,14 +216,13 @@ namespace piru::subsystems {
 
     void* heap_allocator::state::Allocate(size_t size, size_t alignment) {
         if (math::AlignUp(size, alignment) > 2048) {
-            auto pageState = kernel::GetInstance().GetCpu().pageState;
             auto pmm = &kernel::GetInstance().data.pmm;
             auto paging = &kernel::GetInstance().data.paging;
 
             auto pageCount = math::AlignUp(math::AlignUp(size, alignment), system::PageSize) / system::PageSize;
             auto phys = pmm->Allocate(pageCount);
-            auto virt = paging->FindAvailableVirtualAddressRangeKernel(pageCount);
-            paging->MapRange(pageState, virt.start, (uint64_t)phys, pageCount, piru::memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
+            auto virt = slab_allocator::GetVirtualAddress(_pageState, _higherHalf, paging);
+            paging->MapRange(_pageState, virt.start, (uint64_t)phys, pageCount, piru::memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
 
             threading::spinlock::scoped_lock lock(_bigAllocationsLock, true);
             auto currentAllocationTracker = _bigAllocationTracker;
@@ -222,7 +230,7 @@ namespace piru::subsystems {
                 if (currentAllocationTracker->next) {
                     currentAllocationTracker = currentAllocationTracker->next;
                 } else {
-                    currentAllocationTracker->next = _slabAllocator.AllocateSlab(sizeof(big_allocation));
+                    currentAllocationTracker->next = _slabAllocator.AllocateSlab(sizeof(big_allocation), _pageState, true); // big_allocation metadata is ALWAYS in higher half. Its kernel data.
                     threading::spinlock::scoped_lock statsLock(_statsLock, true);
                     _totalUsedSystemMemory += system::PageSize;
                     currentAllocationTracker = currentAllocationTracker->next;
@@ -253,7 +261,7 @@ namespace piru::subsystems {
             if (bucket->next) {
                 bucket = bucket->next;
             } else {
-                bucket->next = _slabAllocator.AllocateSlab(bucket->sizeClass);
+                bucket->next = _slabAllocator.AllocateSlab(bucket->sizeClass, _pageState, _higherHalf);
                 threading::spinlock::scoped_lock statsLock(_statsLock, true);
                 _totalUsedSystemMemory += system::PageSize;
                 bucket = bucket->next;
@@ -294,14 +302,13 @@ namespace piru::subsystems {
                 return;
             }
 
-            auto pageState = kernel::GetInstance().GetCpu().pageState;
             auto pmm = &kernel::GetInstance().data.pmm;
             auto paging = &kernel::GetInstance().data.paging;
 
             auto pageCount = math::AlignUp(math::AlignUp(size, alignment), system::PageSize) / system::PageSize;
 
-            auto phys = paging->GetPhysicalAddress(pageState, (uint64_t)allocation->addr);
-            paging->UnmapRange(pageState, (uint64_t)allocation->addr, pageCount);
+            auto phys = paging->GetPhysicalAddress(_pageState, (uint64_t)allocation->addr);
+            paging->UnmapRange(_pageState, (uint64_t)allocation->addr, pageCount);
             pmm->Free((void*)phys, pageCount);
 
             // Remove from linked list
@@ -377,16 +384,16 @@ namespace piru::subsystems {
         };
     }
 
-    heap_allocator::state::state(string_view name) : _name(name) {
-        _bigAllocationTracker = _slabAllocator.AllocateSlab(sizeof(big_allocation));
-        _smallAllocations[0] = _slabAllocator.AllocateSlab(16);
-        _smallAllocations[1] = _slabAllocator.AllocateSlab(32);
-        _smallAllocations[2] = _slabAllocator.AllocateSlab(64);
-        _smallAllocations[3] = _slabAllocator.AllocateSlab(128);
-        _smallAllocations[4] = _slabAllocator.AllocateSlab(256);
-        _smallAllocations[5] = _slabAllocator.AllocateSlab(512);
-        _smallAllocations[6] = _slabAllocator.AllocateSlab(1024);
-        _smallAllocations[7] = _slabAllocator.AllocateSlab(2048);
+    heap_allocator::state::state(string_view name, memory::paging::state* pageState, bool higherHalf) : _name(name), _pageState(pageState), _higherHalf(higherHalf) {
+        _bigAllocationTracker = _slabAllocator.AllocateSlab(sizeof(big_allocation), _pageState, true);
+        _smallAllocations[0] = _slabAllocator.AllocateSlab(16, _pageState, _higherHalf);
+        _smallAllocations[1] = _slabAllocator.AllocateSlab(32, _pageState, _higherHalf);
+        _smallAllocations[2] = _slabAllocator.AllocateSlab(64, _pageState, _higherHalf);
+        _smallAllocations[3] = _slabAllocator.AllocateSlab(128, _pageState, _higherHalf);
+        _smallAllocations[4] = _slabAllocator.AllocateSlab(256, _pageState, _higherHalf);
+        _smallAllocations[5] = _slabAllocator.AllocateSlab(512, _pageState, _higherHalf);
+        _smallAllocations[6] = _slabAllocator.AllocateSlab(1024, _pageState, _higherHalf);
+        _smallAllocations[7] = _slabAllocator.AllocateSlab(2048, _pageState, _higherHalf);
 
         _totalUsedSystemMemory += sizeof(state) + (sizeof(big_allocation) + sizeof(slab) * 8) + (system::PageSize * 9); // state + big allocation tracker + 8 small allocation slabs + 9 pages for the slabs
     }
@@ -399,23 +406,23 @@ namespace piru::subsystems {
             current = next;
         }
 
-        auto deleteSlabFn = [](slab_allocator* allocator, slab* slab) {
+        auto deleteSlabFn = [](slab_allocator* allocator, slab* slab, memory::paging::state* pageState) {
             while (slab) {
                 auto next = slab->next;
-                allocator->FreeSlab(slab);
+                allocator->FreeSlab(slab, pageState);
                 slab = next;
             }
         };
 
-        deleteSlabFn(&_slabAllocator, _bigAllocationTracker);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[0]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[1]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[2]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[3]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[4]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[5]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[6]);
-        deleteSlabFn(&_slabAllocator, _smallAllocations[7]);
+        deleteSlabFn(&_slabAllocator, _bigAllocationTracker, _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[0], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[1], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[2], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[3], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[4], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[5], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[6], _pageState);
+        deleteSlabFn(&_slabAllocator, _smallAllocations[7], _pageState);
 
         _totalAllocatedMemory = 0;
         _totalUsedSystemMemory = 0;
@@ -427,18 +434,19 @@ namespace piru::subsystems {
 } // state
 
 namespace piru::subsystems {
-    heap_allocator::heap_allocator() {
-
+    heap_allocator::heap_allocator() : _heapState("kernel_heap_allocator", kernel::GetInstance().GetCpu().pageState, true) {
+        _states = nullptr;
     }
 
     Result heap_allocator::Initialize() {
-        _cppNewState = CreateState("kernel_cpp_new");
+        _cppNewState = CreateState("kernel_cpp_new", kernel::GetInstance().GetCpu().pageState, true);
+
         return Result::SUCCESS;
     }
 
-    heap_allocator::state * heap_allocator::CreateState(string_view name) {
+    heap_allocator::state * heap_allocator::CreateState(string_view name, memory::paging::state* pageState, bool higherHalf) {
         auto s = _heapState.Allocate(sizeof(state), alignof(state));
-        auto st = :: new (s) state(name);
+        auto st = :: new (s) state(name, pageState, higherHalf);
 
         auto tracker = (state_list*)_heapState.Allocate(sizeof(state_list));
         tracker->value = st;
