@@ -46,6 +46,9 @@ namespace piru::memory {
         void MapPage(state *state, uint64_t vaddr, uint64_t paddr, Flags flags);
         void UnmapPage(state *state, uint64_t vaddr);
 
+        void MapRange(state *state, uint64_t vaddrStart, uint64_t paddrStart, size_t pageCount, Flags flags);
+        void UnmapRange(state *state, uint64_t vaddrStart, size_t pageCount);
+
         uint64_t GetPhysicalAddress(state *state, uint64_t vaddr);
         [[nodiscard]] bool IsMapped(state *state, uint64_t vaddr);
 

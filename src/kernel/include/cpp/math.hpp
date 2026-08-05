@@ -45,6 +45,22 @@ namespace piru::math {
     [[nodiscard]] constexpr T AlignDown(T value, T alignment) {
         return value & ~(alignment - 1);
     }
+
+    template<typename T>
+    [[nodiscard]] constexpr T IsPowerOf2(T value) {
+        return (value & (value - 1)) == 0;
+    }
+
+    template<typename T>
+    [[nodiscard]] constexpr T PowerOf2(T value) {
+        if (value == 0) return 1;
+        if (IsPowerOf2(value)) return value;
+        T result = 1;
+        while (result < value) {
+            result <<= 1;
+        }
+        return result;
+    }
 }
 
 #endif //PIRU_MATH_HPP

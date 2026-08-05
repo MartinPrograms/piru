@@ -111,7 +111,6 @@ namespace piru {
             asm volatile ("cli");
             auto &kernel = kernel::GetInstance();
 
-            LOG_FATAL("PANIC: {}", string_view(message));
             fmt::format(stream::debug, "\n\n{}", kernel);
 
             // Halt the CPU

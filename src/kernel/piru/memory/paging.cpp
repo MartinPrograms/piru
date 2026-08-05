@@ -133,6 +133,18 @@ namespace piru::memory {
         }
     }
 
+    void paging::MapRange(state *state, uint64_t vaddrStart, uint64_t paddrStart, size_t pageCount, Flags flags) {
+        for (size_t i = 0; i < pageCount; ++i) {
+            MapPage(state, vaddrStart + i * system::PageSize, paddrStart + i * system::PageSize, flags);
+        }
+    }
+
+    void paging::UnmapRange(state *state, uint64_t vaddrStart, size_t pageCount) {
+        for (size_t i = 0; i < pageCount; ++i) {
+            UnmapPage(state, vaddrStart + i * system::PageSize);
+        }
+    }
+
     uint64_t paging::GetPhysicalAddress(state *state, uint64_t vaddr) {
         threading::spinlock::scoped_lock lock(state->lock, true);
 

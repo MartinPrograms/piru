@@ -52,6 +52,25 @@ namespace piru {
         cpu cpus[system::MaxCpuCount];
         cpu& GetCpu();
 
+        [[nodiscard]] size_t GetCpuCount() {
+            return _cpuCount;
+        }
+
+        [[nodiscard]] size_t GetCpuId(uint32_t index) {
+            return _cpuIds[index];
+        }
+
+        [[nodiscard]] size_t GetCpuIndex(uint32_t id) {
+            for (size_t i = 0; i < _cpuCount; i++) {
+                if (_cpuIds[i] == id) return i;
+            }
+            return -1;
+        }
+
+        [[nodiscard]] uint32_t GetBsp() {
+            return _bsp;
+        }
+
     private:
         uint32_t _bsp{};
         uint32_t _cpuIds[system::MaxCpuCount]{};

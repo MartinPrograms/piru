@@ -190,8 +190,7 @@ namespace {
         auto& subsystem = storage.[:FindSelfMember<T>():];
         if (subsystem.Initialize() != piru::subsystems::Result::SUCCESS) {
             if constexpr (T::IS_REQUIRED) {
-                LOG_FATAL("Required subsystem {} failed to initialize", piru::reflection::NameOf<T>());
-                PANIC("Required subsystem failed to initialize");
+                PANIC("Required subsystem {} failed to initialize", piru::reflection::NameOf<T>());
             } else {
                 LOG_WARNING("Optional subsystem {} failed to initialize", piru::reflection::NameOf<T>());
             }
@@ -202,19 +201,28 @@ namespace {
 namespace piru::core {
     static uint8_t subsystemBuffer [sizeof(SubsystemStorage)] __attribute__((aligned(alignof(SubsystemStorage))));
 
+    template<typename T>
+    T* subsystem_manager::GetSubsystem() {
+        auto& storage = *reinterpret_cast<SubsystemStorage*>(_storage);
+        return &storage.[:FindSelfMember<T>():];
+    }
+
     void subsystem_manager::Initialize() {
-        auto storage = reinterpret_cast<SubsystemStorage*>(subsystemBuffer);
+        _storage = reinterpret_cast<SubsystemStorage*>(subsystemBuffer);
 
         template for (constexpr auto system : SubsystemMetaList) {
             using T = typename[:system:];
-            ConstructSubsystem<T>(*storage);
+            ConstructSubsystem<T>(*(SubsystemStorage*)_storage);
         }
 
         template for (constexpr auto system : SubsystemMetaList) {
             using T = typename[:system:];
-            InitSubsystem<T>(*storage);
+            InitSubsystem<T>(*(SubsystemStorage*)_storage);
         }
 
-        _storage = storage;
+        template for (constexpr auto system : SubsystemMetaList) {
+            using T = typename[:system:];
+            (void)this->GetSubsystem<T>();   // instantiate only, don't execute
+        }
     }
 }

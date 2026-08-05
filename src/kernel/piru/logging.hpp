@@ -79,7 +79,7 @@ namespace piru::core {
 #define PANIC(message, ...) \
     do { \
         LOG_FATAL(message __VA_OPT__(,) __VA_ARGS__); \
-        piru::core::Panic(message __VA_OPT__(,) __VA_ARGS__); \
+        piru::core::Panic(message); \
     } while (0)
 
 #endif //PIRU_LOGGING_HPP

@@ -27,7 +27,7 @@ namespace piru::threading {
         };
 
     private:
-        bool _locked;
+        volatile bool _locked;
     };
 }
 
