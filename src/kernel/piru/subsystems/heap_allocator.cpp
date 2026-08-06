@@ -112,12 +112,12 @@ namespace piru::subsystems {
         }
     }
 
-    memory::paging::available_virtual_address_range heap_allocator::slab_allocator::GetVirtualAddress(memory::paging::state *pageState, bool higherHalf, memory::paging * const paging) {
+    memory::paging::available_virtual_address_range heap_allocator::slab_allocator::GetVirtualAddress(memory::paging::state *pageState, bool higherHalf, memory::paging * const paging, size_t pageCount) {
         memory::paging::available_virtual_address_range virt{};
         if (higherHalf)
-            virt = paging->FindAvailableVirtualAddressRangeKernel(1);
+            virt = paging->FindAvailableVirtualAddressRangeKernel(pageCount);
         else
-            virt = paging->FindAvailableVirtualAddressRange(pageState, 1 * constants::MiB, system::EndOfCanonical, 1);
+            virt = paging->FindAvailableVirtualAddressRange(pageState, 1 * constants::MiB, system::EndOfCanonical, pageCount);
         return virt;
     }
 
@@ -126,7 +126,7 @@ namespace piru::subsystems {
         const auto paging = &piru::kernel::GetInstance().data.paging;
 
         auto page = (void*)pmm->Allocate(1);
-        memory::paging::available_virtual_address_range virt = GetVirtualAddress(pageState, higherHalf, paging);
+        memory::paging::available_virtual_address_range virt = GetVirtualAddress(pageState, higherHalf, paging, 1);
 
         paging->MapPage(pageState, (uint64_t)virt.start, (uint64_t)page, memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
 
@@ -221,7 +221,7 @@ namespace piru::subsystems {
 
             auto pageCount = math::AlignUp(math::AlignUp(size, alignment), system::PageSize) / system::PageSize;
             auto phys = pmm->Allocate(pageCount);
-            auto virt = slab_allocator::GetVirtualAddress(_pageState, _higherHalf, paging);
+            auto virt = slab_allocator::GetVirtualAddress(_pageState, _higherHalf, paging, pageCount);
             paging->MapRange(_pageState, virt.start, (uint64_t)phys, pageCount, piru::memory::paging::Flags::ReadWrite | memory::paging::Flags::NoExecute);
 
             threading::spinlock::scoped_lock lock(_bigAllocationsLock, true);

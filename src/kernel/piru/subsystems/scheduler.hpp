@@ -14,6 +14,7 @@ namespace piru::subsystems {
             uint64_t absolute_time;
             void *data;
             callback cb;
+            uint64_t periodic;
         };
 
         static constexpr const char* SUBSYSTEM_NAME = "scheduler";
@@ -21,7 +22,7 @@ namespace piru::subsystems {
 
         [[=subsystem_constructor_tag]] scheduler(heap_allocator& allocator);
 
-        uint64_t Add(callback cb, void* data, uint64_t delayInMs);
+        uint64_t Add(callback cb, void* data, uint64_t delayInMs, bool periodic);
         void Remove(uint64_t id);
 
         Result Initialize();

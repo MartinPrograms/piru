@@ -93,7 +93,7 @@ namespace piru::subsystems {
 
             static memory::paging::available_virtual_address_range GetVirtualAddress(
                 memory::paging::state *pageState, bool higherHalf,
-                memory::paging *paging);
+                memory::paging *paging, size_t pageCount);
 
             slab *AllocateSlab(size_t sizeClass, memory::paging::state *pageState, bool higherHalf);
             void FreeSlab(slab *slab, memory::paging::state *pageState);

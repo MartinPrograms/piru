@@ -9,14 +9,15 @@ namespace piru::subsystems {
 
     }
 
-    uint64_t scheduler::Add(callback cb, void *data, uint64_t delayInMs) {
+    uint64_t scheduler::Add(callback cb, void *data, uint64_t delayInMs, bool periodic) {
         auto id = GetNewId();
 
         _tasks.Add(task{
             .id = id,
             .absolute_time = GetCurrentTime() + delayInMs,
             .data = data,
-            .cb = cb
+            .cb = cb,
+            .periodic = (periodic ? delayInMs : 0)
         });
 
         BubbleUp(_tasks.Count() - 1);
@@ -61,7 +62,10 @@ namespace piru::subsystems {
                     task t = _tasks[0];
                     std::swap(_tasks[0], _tasks[_tasks.Count() - 1]);
                     _tasks.Remove(_tasks.Count() - 1);
-                    BubbleDown(0);
+                    if (_tasks.Count() > 0) {
+                        BubbleDown(0);
+                    }
+
                     toExecute.Add(t);
 
                     currentTime = GetCurrentTime(); // Update just because this mightve taken a while.s
@@ -83,6 +87,11 @@ namespace piru::subsystems {
             for (auto& t : toExecute) {
                 if (t.cb)
                     t.cb(t.absolute_time, t.data);
+                if (t.periodic > 0) {
+                    t.absolute_time = GetCurrentTime() + t.periodic;
+                    _tasks.Add(t);
+                    BubbleUp(_tasks.Count() - 1);
+                }
             }
         }
     }
