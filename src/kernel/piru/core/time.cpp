@@ -6,12 +6,13 @@
 #include <cpp/time.hpp>
 
 namespace piru::core {
-    time::time(cpu &cpu) : _cpu(cpu), _unixTimeStamp(0), _apicFrequency(0) {
+    time::time(cpu &cpu) : _cpu(cpu), _unixBootTimeStamp(0), _secondsSinceBoot(0), _apicFrequency(0) {
 
     }
 
     void time::Calibrate(interrupts::apic &apic, acpi &acpi) {
         uint64_t crystalFreq = 0;
+        _pm = acpi.GetPM();
 
         if (_cpu.HasInvariantTSC()) {
             uint64_t eax = 0, ebx = 0, ecx = 0, edx = 0;
@@ -20,27 +21,38 @@ namespace piru::core {
             if (ebx != 0) {
                 crystalFreq = ecx != 0
                     ? ecx
-                    : (CalibrateApicTsc(acpi.GetPM()) * eax) / ebx;
+                    : (CalibrateApicTsc(_pm) * eax) / ebx;
                 _apicFrequency = crystalFreq;
             } else {
-                _apicFrequency = CalibrateApicDirect(acpi.GetPM(), apic);
+                _apicFrequency = CalibrateApicDirect(_pm, apic);
             }
         } else {
-            _apicFrequency = CalibrateApicDirect(acpi.GetPM(), apic);
+            _apicFrequency = CalibrateApicDirect(_pm, apic);
         }
 
         LOG_DEBUG("Calibrated APIC timer frequency: {} Hz", _apicFrequency);
 
         auto dab = boot::limine::date_at_boot_request.response;
         if (dab) {
-            _unixTimeStamp = dab->timestamp;
+            _unixBootTimeStamp = dab->timestamp;
         } else {
             PANIC("Limine date at boot request response is null, cannot set unix timestamp!");
         }
     }
 
+    uint64_t time::GetMs() {
+        static uint64_t totalTicks = 0;
+        static uint32_t lastTick = _pm.Read();
+        uint32_t currentTick = _pm.Read();
+
+        totalTicks += _pm.Elapsed(lastTick, currentTick);
+        lastTick = currentTick;
+
+        return (totalTicks * 1000) / PM_TIMER_FREQ;
+    }
+
     void time::Tick() {
-        _unixTimeStamp++;
+        _secondsSinceBoot++;
     }
 
     uint64_t time::CalibrateApicTsc(const acpi::pm_timer &pm) {

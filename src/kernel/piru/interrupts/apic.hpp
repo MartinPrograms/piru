@@ -39,6 +39,9 @@ namespace piru::interrupts {
         void SendIPISelf(uint8_t vector);
         uint32_t ReceiveIPI();
 
+        void Sleep(uint64_t durationInMs);
+        void EndSleep(); // called by IDT.
+
     private:
         static void WriteRegister(uint32_t offset, uint32_t value);
         static uint32_t ReadRegister(uint32_t offset);
@@ -46,6 +49,8 @@ namespace piru::interrupts {
         static uint64_t _lapicBase;
         static size_t _localAPICNMIcount;
         static core::acpi::madt *_madt;
+
+        bool _sleeping = false;
     };
 }
 

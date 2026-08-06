@@ -16,15 +16,17 @@ namespace piru::core {
         // Then uses the Limine Date At Boot request to set the unix timestamp.
         void Calibrate(interrupts::apic &apic, acpi &acpi);
 
-        [[nodiscard]] uint64_t GetUnixTimestamp() const { return _unixTimeStamp; }
+        [[nodiscard]] uint64_t GetUnixTimestamp() const { return _unixBootTimeStamp + _secondsSinceBoot; }
         [[nodiscard]] uint64_t GetApicFrequency() const { return _apicFrequency; }
-
+        [[nodiscard]] uint64_t GetMs();
         void Tick();
 
     private:
         cpu &_cpu;
-        uint64_t _unixTimeStamp;
+        uint64_t _unixBootTimeStamp;
+        uint64_t _secondsSinceBoot;
         uint64_t _apicFrequency;
+        acpi::pm_timer _pm;
 
         static constexpr uint32_t PM_TIMER_FREQ = 3579545;
         static constexpr uint32_t CALIBRATION_MS = 100;

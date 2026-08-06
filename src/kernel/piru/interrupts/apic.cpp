@@ -1,6 +1,7 @@
 #include "apic.hpp"
 
 #include "kernel.hpp"
+#include "logging.hpp"
 #include "core/cpu.hpp"
 
 namespace piru::interrupts {
@@ -111,6 +112,21 @@ namespace piru::interrupts {
 
     uint32_t apic::ReceiveIPI() {
         return ReadRegister(0x310) >> 24;
+    }
+
+    void apic::Sleep(uint64_t durationInMs) {
+        _sleeping = true;
+        auto freq = kernel::GetInstance().data.time.GetApicFrequency();
+        auto steps = (durationInMs * freq) / 1000;
+        SetLvtTimer(idt::APIC_SLEEP_VECTOR, TimerDivide::By1, false, steps);
+
+        while (_sleeping) {
+            asm ("hlt");
+        }
+    }
+
+    void apic::EndSleep() {
+        _sleeping = false;
     }
 
     void apic::WriteRegister(uint32_t offset, uint32_t value) {

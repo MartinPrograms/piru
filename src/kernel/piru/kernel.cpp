@@ -5,6 +5,7 @@
 #include <logging.hpp>
 
 #include "boot/limine_definitions.hpp"
+#include "subsystems/scheduler.hpp"
 
 void Trampoline(limine_mp_info* info) {
     piru::kernel::GetInstance().CpuInit(info->lapic_id);
@@ -84,9 +85,9 @@ namespace piru {
         _initializedCount++;
         _initLock.unlock(flags);
 
-        if (cpuId != _bsp) {
-            asm volatile ("sti");
+        asm volatile ("sti");
 
+        if (cpuId != _bsp) {
             while (true) {
                 asm ("hlt"); // park
             }
@@ -98,7 +99,17 @@ namespace piru {
     }
 
     void kernel::Start() {
+        GetCpu().apic.Sleep(1000);
 
+        auto scheduler = data.subsystem_manager.GetSubsystem<subsystems::scheduler>();
+
+        for (size_t i = 1; i < 129; i++) {
+            scheduler->Add([](uint64_t, void* data) {
+                LOG_DEBUG("Hello from the scheduler callback! After {} ms!", ((size_t)data) * 100);
+            }, (void*)i, i * 100); // every 100ms send a callback
+        }
+
+        scheduler->Run();
     }
 
     struct kernel::cpu &kernel::GetCpu() {

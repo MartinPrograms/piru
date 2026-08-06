@@ -36,6 +36,8 @@ namespace piru::interrupts {
         using exception_handler = void(*)(registers *);
         using irq_handler = void(*)(registers *);
 
+        constexpr static uint8_t APIC_SLEEP_VECTOR = 0xFF - 1;
+
         void Initialize();
         void InitializeCpu();
         uint8_t AllocateVector();

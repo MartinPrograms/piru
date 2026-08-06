@@ -47,6 +47,10 @@ namespace piru::interrupts {
 
         // Reserve 253, 254 and 255
         _allocatedVectors[31] = 0xE0; // 11100000
+
+        RegisterIRQHandler(APIC_SLEEP_VECTOR, [](registers* regs) {
+            kernel::GetInstance().GetCpu().apic.EndSleep();
+        });
     }
 
     void idt::InitializeCpu() {
