@@ -1,6 +1,8 @@
 #ifndef PIRU_HEAP_ALLOCATOR_HPP
 #define PIRU_HEAP_ALLOCATOR_HPP
 
+#include <bit>
+
 #include "subsystem.hpp"
 #include "cpp/string_view.hpp"
 #include "cpp/spinlock.hpp"
@@ -17,64 +19,61 @@ namespace piru::subsystems {
             size_t alignment;
         };
 
-        struct slab {
+        struct ALIGNED(32) slab {
             slab *next;
             void *addr;
-            size_t sizeClass;
-            size_t maxElementCount;
+            uint16_t sizeClass;
+            uint16_t maxElementCount;
+            uint16_t allocatedCount;
             uint64_t allocationMap[4]; // 256 entries, enough for a size class of 16.
 
             [[nodiscard]] bool IsFree(size_t index) const {
-                for (size_t i = 0; i < 4; i++) {
-                    if (i * 64 + index >= maxElementCount) break;
-                    if (allocationMap[i] & (1ULL << index)) {
-                        return false;
-                    }
-                }
-
-                return true;
+                return !(allocationMap[index / 64] & (1ULL << (index % 64)));
             }
 
             [[nodiscard]] bool IsEmpty() const {
-                for (size_t i = 0; i < maxElementCount; i++) {
-                    if (!IsFree(i)) {
-                        return false;
-                    }
-                }
-                return true;
+                return allocatedCount == 0;
             }
 
             [[nodiscard]] bool IsFull() const {
-                for (size_t i = 0; i < maxElementCount; i++) {
-                    if (IsFree(i)) {
-                        return false;
-                    }
-                }
-
-                return true;
+                return allocatedCount == maxElementCount;
             }
 
             [[nodiscard]] bool Has(void* ptr) const {
-                size_t index = ((uintptr_t)ptr - (uintptr_t)addr) / sizeClass;
-                return index < maxElementCount;
+                auto p = static_cast<std::byte*>(ptr);
+                auto max = static_cast<std::byte*>(addr) + (maxElementCount * sizeClass);
+                if (p < addr || p >= max)
+                    return false;
+
+                size_t offset = p - static_cast<std::byte*>(addr);
+                return (offset % sizeClass) == 0;
             }
 
             void Set(size_t index, bool allocated) {
-                for (size_t i = 0; i < 4; i++) {
-                    if (i * 64 + index >= maxElementCount) break;
-                    if (allocated) {
-                        allocationMap[i] |= (1ULL << index);
-                    } else {
-                        allocationMap[i] &= ~(1ULL << index);
-                    }
+                size_t chunk = index / 64;
+                uint64_t mask = 1ULL << (index % 64);
+                if (allocated) {
+                    allocationMap[chunk] |= mask;
+                } else {
+                    allocationMap[chunk] &= ~mask;
                 }
             }
 
             void* Allocate() {
-                for (size_t i = 0; i < maxElementCount; i++) {
-                    if (IsFree(i)) {
-                        Set(i, true);
-                        return (void*)((uintptr_t)addr + i * sizeClass);
+                if (allocatedCount == maxElementCount) return nullptr;
+
+                for (size_t i = 0; i < 4; i++) {
+                    uint64_t freeBits = ~allocationMap[i];
+                    if (i == 3 && (maxElementCount % 64) != 0) {
+                        freeBits &= (1ULL << (maxElementCount % 64)) - 1;
+                    }
+
+                    if (freeBits) {
+                        size_t bit = std::countr_zero(freeBits);
+                        size_t index = i * 64 + bit;
+                        Set(index, true);
+                        allocatedCount++;
+                        return static_cast<std::byte*>(addr) + (index * sizeClass);
                     }
                 }
 
@@ -82,8 +81,15 @@ namespace piru::subsystems {
             }
 
             void Give(void *ptr) {
-                size_t index = ((uintptr_t)ptr - (uintptr_t)addr) / sizeClass;
+                auto p = static_cast<std::byte*>(ptr);
+                auto max = static_cast<std::byte*>(addr) + (maxElementCount * sizeClass);
+                if (p < addr || p >= max)
+                    return;
+
+                size_t offset = p - static_cast<std::byte*>(addr);
+                size_t index = offset / sizeClass;
                 Set(index, false);
+                allocatedCount--;
             }
         };
 
