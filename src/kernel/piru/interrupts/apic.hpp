@@ -35,6 +35,7 @@ namespace piru::interrupts {
         uint32_t GetLvtCount();
 
         void SendIPI(uint8_t vector, uint32_t destination, DeliveryMode deliveryMode, TriggerMode triggerMode, DestinationShorthand destinationShorthand);
+        void SendIPIAll(uint8_t vector);
         void SendIPIAllExcludingSelf(uint8_t vector);
         void SendIPISelf(uint8_t vector);
         uint32_t ReceiveIPI();

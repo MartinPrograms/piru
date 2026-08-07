@@ -15,6 +15,7 @@
 #include "memory/physical_memory_manager.hpp"
 #include "core/time.hpp"
 #include "core/subsystem_manager.hpp"
+#include <atomic>
 
 namespace piru {
     class kernel {

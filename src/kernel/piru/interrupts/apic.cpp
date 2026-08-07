@@ -102,6 +102,10 @@ namespace piru::interrupts {
         }
     }
 
+    void apic::SendIPIAll(uint8_t vector) {
+        SendIPI(vector, 0, DeliveryMode::Fixed, TriggerMode::Edge, DestinationShorthand::AllIncludingSelf);
+    }
+
     void apic::SendIPIAllExcludingSelf(uint8_t vector) {
         SendIPI(vector, 0, DeliveryMode::Fixed, TriggerMode::Edge, DestinationShorthand::AllExcludingSelf);
     }

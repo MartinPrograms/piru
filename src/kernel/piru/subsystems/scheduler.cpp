@@ -51,47 +51,45 @@ namespace piru::subsystems {
     }
 
     void scheduler::Run() {
-        while (true) {
-            list<task> toExecute;
+        list<task> toExecute;
 
-            {
-                threading::spinlock::scoped_lock lock(_lock, true);
-                uint64_t currentTime = GetCurrentTime();
+        {
+            threading::spinlock::scoped_lock lock(_lock, true);
+            uint64_t currentTime = GetCurrentTime();
 
-                while (_tasks.Count() > 0 && _tasks[0].absolute_time <= currentTime) {
-                    task t = _tasks[0];
-                    std::swap(_tasks[0], _tasks[_tasks.Count() - 1]);
-                    _tasks.Remove(_tasks.Count() - 1);
-                    if (_tasks.Count() > 0) {
-                        BubbleDown(0);
-                    }
-
-                    toExecute.Add(t);
-
-                    currentTime = GetCurrentTime(); // Update just because this mightve taken a while.s
-                }
-
+            while (_tasks.Count() > 0 && _tasks[0].absolute_time <= currentTime) {
+                task t = _tasks[0];
+                std::swap(_tasks[0], _tasks[_tasks.Count() - 1]);
+                _tasks.Remove(_tasks.Count() - 1);
                 if (_tasks.Count() > 0) {
-                    uint64_t nextTriggerTime = _tasks[0].absolute_time;
-                    uint64_t now = GetCurrentTime();
-
-                    if (nextTriggerTime > now) {
-                        uint64_t sleepDuration = nextTriggerTime - now;
-                        lock.~scoped_lock(); // Unlock before sleeping
-
-                        HardwareSleep(sleepDuration); // Sleep for the duration until the next task
-                    }
+                    BubbleDown(0);
                 }
+
+                toExecute.Add(t);
+
+                currentTime = GetCurrentTime(); // Update just because this mightve taken a while.s
             }
 
-            for (auto& t : toExecute) {
-                if (t.cb)
-                    t.cb(t.absolute_time, t.data);
-                if (t.periodic > 0) {
-                    t.absolute_time = GetCurrentTime() + t.periodic;
-                    _tasks.Add(t);
-                    BubbleUp(_tasks.Count() - 1);
+            if (_tasks.Count() > 0) {
+                uint64_t nextTriggerTime = _tasks[0].absolute_time;
+                uint64_t now = GetCurrentTime();
+
+                if (nextTriggerTime > now) {
+                    uint64_t sleepDuration = nextTriggerTime - now;
+                    lock.~scoped_lock(); // Unlock before sleeping
+
+                    HardwareSleep(sleepDuration); // Sleep for the duration until the next task
                 }
+            }
+        }
+
+        for (auto& t : toExecute) {
+            if (t.cb)
+                t.cb(t.absolute_time, t.data);
+            if (t.periodic > 0) {
+                t.absolute_time = GetCurrentTime() + t.periodic;
+                _tasks.Add(t);
+                BubbleUp(_tasks.Count() - 1);
             }
         }
     }

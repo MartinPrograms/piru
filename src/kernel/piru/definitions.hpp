@@ -27,7 +27,7 @@ namespace piru::core {
 }
 
 namespace piru::system {
-    constexpr inline size_t MaxCpuCount = 512;
+    constexpr inline size_t MaxCpuCount = 256; // xAPIC v1 limitation
     constexpr inline uint64_t KernelOffset = 0xFFFFFFFF80000000;
     constexpr inline size_t PageSize = 0x1000;
     constexpr inline size_t MaxIOAPICs = 50;

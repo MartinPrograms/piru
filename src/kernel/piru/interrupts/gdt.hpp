@@ -11,6 +11,11 @@ namespace piru::interrupts {
         void Initialize(uint32_t cpuId, tss *tss);
         static uint32_t GetCpuId();
 
+        static constexpr uint64_t USER_CODE_SELECTOR = (7 * 8) | 3;
+        static constexpr uint64_t USER_DATA_SELECTOR = (6 * 8) | 3;
+        static constexpr uint64_t KERNEL_CODE_SELECTOR = 1 * 8;
+        static constexpr uint64_t KERNEL_DATA_SELECTOR = 2 * 8;
+
     private:
         struct gdt_entry {
             uint16_t limitLow;

@@ -5,11 +5,13 @@
 #include <logging.hpp>
 
 #include "boot/limine_definitions.hpp"
-#include "subsystems/scheduler.hpp"
+#include "subsystems.hpp"
 
 void Trampoline(limine_mp_info* info) {
     piru::kernel::GetInstance().CpuInit(info->lapic_id);
 }
+
+std::atomic<bool> _schedulerReady{false};
 
 namespace piru {
     kernel & kernel::GetInstance() {
@@ -85,12 +87,13 @@ namespace piru {
         _initializedCount++;
         _initLock.unlock(flags);
 
-        asm volatile ("sti");
-
         if (cpuId != _bsp) {
-            while (true) {
-                asm ("hlt"); // park
+            while (_schedulerReady.load(std::memory_order_acquire) == false) {
+                asm ("pause");
             }
+
+            auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
+            threading->StartCore();
         }
     }
 
@@ -99,13 +102,18 @@ namespace piru {
     }
 
     void kernel::Start() {
-        auto scheduler = data.subsystem_manager.GetSubsystem<subsystems::scheduler>();
+        auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
 
-        scheduler->Add([](uint64_t, void*) {
-            LOG_DEBUG("Hello from the scheduler callback!");
-        }, nullptr, 1000, true); // every 100ms send a callback
+        for (size_t i = 0; i < GetCpuCount(); i++) {
+            threading->CreateThread([](void* arg) {
+                while (true)
+                    LOG_DEBUG("this thread is running... doing work on CPU {}...", interrupts::gdt::GetCpuId());
+            }, nullptr, false, GetCpu().pageState);
+        }
 
-        scheduler->Run();
+        _schedulerReady.store(true, std::memory_order_release);
+
+        threading->StartCore();
     }
 
     struct kernel::cpu &kernel::GetCpu() {
@@ -124,6 +132,10 @@ namespace piru {
             while (true) {
                 asm volatile("hlt");
             }
+        }
+
+        extern "C" [[noreturn]] void abort() {
+            Panic("Kernel abort() called");
         }
 
         threading::spinlock & GetLogLock() {
