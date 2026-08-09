@@ -39,7 +39,6 @@ namespace piru::subsystems {
         constexpr static uint64_t THREAD_TIME = 10; // 10 ms per thread
         constexpr static size_t KERNEL_STACK_SIZE = 16 * 1024; // 16KB
         constexpr static size_t FPU_STATE_SIZE = 1024; // Safe for AVX/AVX512, query CPUID 0x0D for exact size
-        constexpr static uint8_t THREAD_SCHEDULER_VECTOR = 0xFF - 2;
 
         [[=subsystem_constructor_tag]] thread_scheduler(heap_allocator& allocator);
 
@@ -65,6 +64,7 @@ namespace piru::subsystems {
         thread_control_block* _currentThread[system::MaxCpuCount]{};
         thread_control_block* _idleThread[system::MaxCpuCount]{};
         list<thread_control_block*> _threads;
+        size_t _nextThreadIndex{};
 
         thread_control_block * CreateIdleThread();
         uint64_t GetNewId();

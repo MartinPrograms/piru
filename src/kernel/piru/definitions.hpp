@@ -39,8 +39,6 @@ namespace piru::system {
     extern volatile uintptr_t *KernelEnd;
     extern volatile uintptr_t *DefaultFaultHandlerTop;
     extern volatile uintptr_t *DefaultFaultHandlerBottom;
-    extern volatile size_t StackSize;
-    extern volatile size_t KernelSize;
 }
 
 #endif //PIRU_MAIN_H

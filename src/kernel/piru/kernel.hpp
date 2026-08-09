@@ -43,6 +43,8 @@ namespace piru {
 
         // per cpu core
         struct cpu {
+            uint64_t stackBase;
+            uint64_t faultHandlerStackBase;
             interrupts::tss tss{};
             interrupts::gdt gdt{};
             memory::paging::state *pageState{};

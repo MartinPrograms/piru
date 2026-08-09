@@ -53,6 +53,19 @@ namespace piru {
         for (size_t i = 0; i < mp_response->cpu_count; i++) {
             auto core = mp_response->cpus[i];
             if (core->lapic_id == _bsp) continue; // Skip BSP
+
+            auto stackPageCount = ((uintptr_t)system::StackTop - (uintptr_t)system::StackBottom) / system::PageSize;
+            auto physRsp0 = data.pmm.Allocate(stackPageCount);
+            auto virtRsp0 = data.paging.FindAvailableVirtualAddressRangeKernel(stackPageCount);
+            data.paging.MapRange(GetCpu().pageState, virtRsp0.start, (uintptr_t)physRsp0, stackPageCount, memory::paging::Flags::ReadWrite);
+
+            auto physIst1 = data.pmm.Allocate(stackPageCount);
+            auto virtIst1 = data.paging.FindAvailableVirtualAddressRangeKernel(stackPageCount);
+            data.paging.MapRange(GetCpu().pageState, virtIst1.start, (uintptr_t)physIst1, stackPageCount, memory::paging::Flags::ReadWrite);
+
+            cpus[core->lapic_id].stackBase = virtRsp0.end;
+            cpus[core->lapic_id].faultHandlerStackBase = virtIst1.end;
+
             auto trampoline = Trampoline;
             __atomic_store(&core->goto_address, &trampoline, __ATOMIC_RELEASE);
         }
@@ -73,7 +86,7 @@ namespace piru {
         LOG_DEBUG("Initializing CPU with ID: {}", cpuId);
 
         if (cpuId != _bsp) {
-            cpus[cpuId].tss.Initialize(cpuId, (void*)system::StackTop, (void*)system::DefaultFaultHandlerTop);
+            cpus[cpuId].tss.Initialize(cpuId, (void*)cpus[cpuId].stackBase, (void*)cpus[cpuId].faultHandlerStackBase);
             cpus[cpuId].gdt.Initialize(cpuId, &cpus[cpuId].tss);
             data.idt.InitializeCpu();
             data.cpu.InitializeCpu();
@@ -104,15 +117,15 @@ namespace piru {
     void kernel::Start() {
         auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
 
-        for (size_t i = 0; i < GetCpuCount(); i++) {
+        for (size_t i = 0; i < GetCpuCount() * 8; i++) {
             threading->CreateThread([](void* arg) {
-                while (true)
-                    LOG_DEBUG("this thread is running... doing work on CPU {}...", interrupts::gdt::GetCpuId());
-            }, nullptr, false, GetCpu().pageState);
+                while (true) {
+                    LOG_DEBUG("Thread {} is running on CPU {}", (uint64_t)arg, interrupts::gdt::GetCpuId());
+                }
+            }, (void*)i, false, GetCpu().pageState);
         }
 
         _schedulerReady.store(true, std::memory_order_release);
-
         threading->StartCore();
     }
 
@@ -125,6 +138,7 @@ namespace piru {
         [[noreturn]] void Panic(const char* message) {
             asm volatile ("cli");
             auto &kernel = kernel::GetInstance();
+            kernel.GetCpu().apic.SendIPIAllExcludingSelf(interrupts::idt::PANIC_VECTOR);
 
             fmt::format(stream::debug, "\n\n{}", kernel);
 

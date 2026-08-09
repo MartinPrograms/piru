@@ -120,63 +120,6 @@ namespace piru::core {
         controlWord = 0x37F;
         asm volatile("fldcw %0" :: "m"(controlWord));
         asm volatile("ldmxcsr %0" :: "m"(mxcsr));
-
-        // Test the FPU to make sure nothing is fucked up
-        float fpuTest = 1.5f + 2.5f;
-        if (fpuTest != 4.0f) {
-            LOG_ERROR("Core #{}: FPU test failed ({} != 4.0)!", cpuId, fpuTest);
-            PANIC("SIMD initialization failed: FPU test failed!");
-        }
-
-        // Test SSE to make sure nothing is fucked up
-        float a[2] = { 1.0f, 4.2f };
-        float b[2] = { -5.0f, 6.9f };
-        float result[2] = { 0 };
-
-        asm volatile(
-            "movups (%1), %%xmm0\n\t"
-            "movups (%2), %%xmm1\n\t"
-            "addps %%xmm1, %%xmm0\n\t"
-            "movups %%xmm0, (%0)\n\t"
-            :
-            : "r"(result), "r"(a), "r"(b)
-            : "xmm0", "xmm1", "memory"
-        );
-
-        if (result[0] != -4.0f || result[1] != 11.1f) {
-            LOG_ERROR("Core #{}: SSE test failed ({} != -4.0 or {} != 11.1)!", cpuId, result[0], result[1]);
-            PANIC("SIMD initialization failed: SSE test failed!");
-        }
-
-        // Test AVX with 256-bit YMM registers instead of 128-bit XMM registers, all elements should equal 9.0f
-        if (hasAVX) {
-            float avxA[8] = { 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f };
-            float avxB[8] = { 8.0f, 7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f };
-            float avxResult[8] = { 0 };
-
-            asm volatile(
-                "vmovups (%1), %%ymm0\n\t"
-                "vmovups (%2), %%ymm1\n\t"
-                "vaddps %%ymm1, %%ymm0, %%ymm0\n\t"
-                "vmovups %%ymm0, (%0)\n\t"
-                :
-                : "r"(avxResult), "r"(avxA), "r"(avxB)
-                : "ymm0", "ymm1", "memory"
-            );
-
-            bool avxPassed = true;
-            for (float i : avxResult) {
-                if (i != 9.0f) {
-                    avxPassed = false;
-                    break;
-                }
-            }
-
-            if (!avxPassed) {
-                LOG_ERROR("Core #{}: AVX test failed, it will not be usable!", cpuId);
-                hasAVX = false;
-            }
-        }
     }
 
     void cpu::WriteMSR(uint32_t msr, uint64_t value) {

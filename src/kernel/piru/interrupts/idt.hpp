@@ -37,6 +37,8 @@ namespace piru::interrupts {
         using irq_handler = void(*)(registers *);
 
         constexpr static uint8_t APIC_SLEEP_VECTOR = 0xFF - 1;
+        constexpr static uint8_t THREAD_SCHEDULER_VECTOR = 0xFF - 2;
+        constexpr static uint8_t PANIC_VECTOR = 0xFF - 3;
 
         void Initialize();
         void InitializeCpu();

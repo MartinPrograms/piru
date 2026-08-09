@@ -15,6 +15,10 @@ namespace piru::io {
         void Write(const uint8_t* data, size_t count);
         void Write(string_view data);
 
+        [[nodiscard]] limine_framebuffer* GetFramebuffer() {
+            return _framebuffer;
+        }
+
     private:
         threading::spinlock _lock{};
         limine_framebuffer *_framebuffer{};

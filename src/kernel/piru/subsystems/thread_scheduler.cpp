@@ -51,10 +51,10 @@ namespace piru::subsystems {
             return Result::FAILURE;
         }
 
-        kernel::GetInstance().data.idt.RegisterIRQHandler(THREAD_SCHEDULER_VECTOR, HandleThreadInterrupt);
+        kernel::GetInstance().data.idt.RegisterIRQHandler(interrupts::idt::THREAD_SCHEDULER_VECTOR, HandleThreadInterrupt);
 
-        for (size_t i = 0; i < system::MaxCpuCount; i++) {
-            _currentThread[i] = nullptr;
+        for (auto & i : _currentThread) {
+            i = nullptr;
         }
 
         for (size_t i = 0; i < kernel::GetInstance().GetCpuCount(); i++) {
@@ -73,7 +73,7 @@ namespace piru::subsystems {
             uint8_t* fpuState = (uint8_t*)_threadState->Allocate(FPU_STATE_SIZE, 64);
             memset(fpuState, 0, FPU_STATE_SIZE);
 
-            asm volatile("fninit; xsave %0" : : "m"(*fpuState) : "memory");
+            // asm volatile("fninit; xsave %0" : : "m"(*fpuState) : "memory");
             tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
 
             *tcb = {
@@ -117,7 +117,7 @@ namespace piru::subsystems {
             _threads.Add(tcb);
         }
 
-        kernel::GetInstance().GetCpu().apic.SendIPIAll(THREAD_SCHEDULER_VECTOR);
+        kernel::GetInstance().GetCpu().apic.SendIPIAll(interrupts::idt::THREAD_SCHEDULER_VECTOR);
         return tcb->id;
     }
 
@@ -137,20 +137,23 @@ namespace piru::subsystems {
     }
 
     thread_scheduler::thread_control_block* thread_scheduler::GetNextThread() {
-        threading::spinlock::scoped_lock lock(_lock, true);
-        for (auto& tcb : _threads) {
-            if (tcb->tcbState == state::READY) {
-                return tcb;
+        size_t count = _threads.Count();
+        if (count == 0) return nullptr;
+
+        for (size_t i = 0; i < count; i++) {
+            size_t index = (i + _nextThreadIndex) % count;
+            if (_threads[index]->tcbState == state::READY) {
+                _nextThreadIndex = (index + 1) % count;
+                return _threads[index];
             }
         }
-
         return nullptr;
     }
 
     void thread_scheduler::Tick(interrupts::idt::registers *interruptContext) {
+        threading::spinlock::scoped_lock lock(_lock, true);
         auto current = GetCurrentThread();
         auto next = GetNextThread();
-        threading::spinlock::scoped_lock lock(_lock, true);
 
         if (!next && !current) {
             _currentThread[interrupts::gdt::GetCpuId()] = _idleThread[interrupts::gdt::GetCpuId()];
@@ -164,6 +167,7 @@ namespace piru::subsystems {
         if (current && interruptContext) {
             current->registers = *interruptContext;
             current->rsp = (void*)interruptContext;
+            // asm volatile ("fxsave %0" : "=m"(*current->fpuState));
         }
 
         if (current == next) // continue where we left off.
@@ -173,12 +177,13 @@ namespace piru::subsystems {
             current->tcbState = state::READY;
 
         next->tcbState = state::RUNNING;
+        // asm volatile ("fxrstor %0" : : "m"(*next->fpuState));
 
         _currentThread[interrupts::gdt::GetCpuId()] = next;
     }
 
     void thread_scheduler::Yield() {
-
+        asm volatile ("int $0xFD");
     }
 
     void thread_scheduler::Sleep(uint64_t ms) {
@@ -191,7 +196,7 @@ namespace piru::subsystems {
 
     void thread_scheduler::StartCore() {
         auto apic = kernel::GetInstance().GetCpu().apic;
-        apic.SetLvtTimer(THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, kernel::GetInstance().data.time.GetApicFrequency() / 1000 * THREAD_TIME);
+        apic.SetLvtTimer(interrupts::idt::THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, kernel::GetInstance().data.time.GetApicFrequency() / 1000 * THREAD_TIME);
 
         asm volatile ("sti");
 
@@ -207,7 +212,7 @@ namespace piru::subsystems {
         uint8_t* fpuState = (uint8_t*)_threadState->Allocate(FPU_STATE_SIZE, 64);
         memset(fpuState, 0, FPU_STATE_SIZE);
 
-        asm volatile("fninit; xsave %0" : : "m"(*fpuState) : "memory");
+        // asm volatile ("fninit; fxsave %0" : "=m"(*fpuState));
         auto tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
 
         *tcb = {

@@ -51,6 +51,14 @@ namespace piru::interrupts {
         RegisterIRQHandler(APIC_SLEEP_VECTOR, [](registers* regs) {
             kernel::GetInstance().GetCpu().apic.EndSleep();
         });
+
+        RegisterIRQHandler(PANIC_VECTOR, [](registers* regs) {
+            asm volatile ("cli");
+
+            while (true) {
+                asm volatile ("hlt");
+            }
+        });
     }
 
     void idt::InitializeCpu() {
