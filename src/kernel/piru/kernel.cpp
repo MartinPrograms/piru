@@ -59,9 +59,10 @@ namespace piru {
             auto virtRsp0 = data.paging.FindAvailableVirtualAddressRangeKernel(stackPageCount);
             data.paging.MapRange(GetCpu().pageState, virtRsp0.start, (uintptr_t)physRsp0, stackPageCount, memory::paging::Flags::ReadWrite);
 
-            auto physIst1 = data.pmm.Allocate(stackPageCount);
-            auto virtIst1 = data.paging.FindAvailableVirtualAddressRangeKernel(stackPageCount);
-            data.paging.MapRange(GetCpu().pageState, virtIst1.start, (uintptr_t)physIst1, stackPageCount, memory::paging::Flags::ReadWrite);
+            auto faultStackPageCount = ((uintptr_t)system::DefaultFaultHandlerTop - (uintptr_t)system::DefaultFaultHandlerBottom) / system::PageSize;
+            auto physIst1 = data.pmm.Allocate(faultStackPageCount);
+            auto virtIst1 = data.paging.FindAvailableVirtualAddressRangeKernel(faultStackPageCount);
+            data.paging.MapRange(GetCpu().pageState, virtIst1.start, (uintptr_t)physIst1, faultStackPageCount, memory::paging::Flags::ReadWrite);
 
             cpus[core->lapic_id].stackBase = virtRsp0.end;
             cpus[core->lapic_id].faultHandlerStackBase = virtIst1.end;
