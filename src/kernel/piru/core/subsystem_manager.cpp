@@ -202,7 +202,7 @@ namespace piru::core {
     static uint8_t subsystemBuffer [sizeof(SubsystemStorage)] __attribute__((aligned(alignof(SubsystemStorage))));
 
     template<typename T>
-    T* subsystem_manager::GetSubsystem() {
+    USED T* subsystem_manager::GetSubsystem() {
         auto& storage = *reinterpret_cast<SubsystemStorage*>(_storage);
         return &storage.[:FindSelfMember<T>():];
     }

@@ -88,6 +88,11 @@ namespace piru::memory {
 
         pt->entries[ptIndex] = (paddr & PointerMask) | entryFlags;
         asm volatile("invlpg (%0)" ::"r"(vaddr) : "memory"); // Invalidate the TLB entry for this page to ensure the new mapping is used immediately
+
+        if (vaddr >= system::EndOfCanonical && _shootdownEnabled) {
+            _shootdownAddress = vaddr;
+            kernel::GetInstance().GetCpu().apic.SendIPIAllExcludingSelf(interrupts::idt::PAGING_TLB_SHOOTDOWN);
+        }
     }
 
     void paging::UnmapPage(state *state, uint64_t vaddr) {
@@ -120,6 +125,11 @@ namespace piru::memory {
 
         pt->entries[ptIndex] = 0; // Clear the entry to unmap the page
         asm volatile("invlpg (%0)" ::"r"(vaddr) : "memory"); // Invalidate the TLB entry for this page to ensure the unmapping takes effect immediately
+
+        if (vaddr >= system::EndOfCanonical && _shootdownEnabled) {
+            _shootdownAddress = vaddr;
+            kernel::GetInstance().GetCpu().apic.SendIPIAllExcludingSelf(interrupts::idt::PAGING_TLB_SHOOTDOWN);
+        }
 
         // Check if PT is now empty, and if so, free it and clear the PD entry
         if (IsTableEmpty(reinterpret_cast<uint64_t*>(pt))) {
@@ -187,8 +197,12 @@ namespace piru::memory {
         return (GetPhysicalAddress(state, vaddr) != 0);
     }
 
+    uint64_t paging::GetShootdownAddress() const {
+        return _shootdownAddress;
+    }
+
     paging::available_virtual_address_range paging::FindAvailableVirtualAddressRange(state *state, uintptr_t start,
-        uintptr_t end, size_t pageCount) {
+                                                                                     uintptr_t end, size_t pageCount) {
         uintptr_t current = start;
         size_t foundPages = 0;
 
@@ -212,6 +226,18 @@ namespace piru::memory {
         uintptr_t start = 0xFFFFFFFF80000000ULL;
         uintptr_t end = 0xFFFFFFFFFFFFF000ULL;
         return FindAvailableVirtualAddressRange(&_kernelState, start, end, count);
+    }
+
+    void paging::InvalidateTlb(uint64_t vaddr) {
+        asm volatile ("invlpg (%0)" ::"r"(vaddr) : "memory");
+    }
+
+    void paging::ReloadCR3() {
+        asm volatile ("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
+    }
+
+    void paging::EnableShootdown() {
+        _shootdownEnabled = true;
     }
 
     void paging::ReserveHigherHalfPML4Slots(state *state, uint64_t higherHalf) const {

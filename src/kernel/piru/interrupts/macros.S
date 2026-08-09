@@ -1,6 +1,6 @@
 .intel_syntax noprefix
 
-/* Save all general-purpose registers in reverse order (r15 … rax) */
+/* Save all general-purpose registers (16 registers = 128 bytes) */
 .macro SAVE_REGS
     push    r15
     push    r14
@@ -17,10 +17,12 @@
     push    rcx
     push    rbx
     push    rax
+    push    rax /* Padding slot to keep 16-register size balance */
 .endm
 
-/* Restore registers in the opposite order (rax … r15) */
+/* Restore registers in reverse order */
 .macro RESTORE_REGS
+    pop     rax
     pop     rax
     pop     rbx
     pop     rcx
@@ -38,67 +40,66 @@
     pop     r15
 .endm
 
-/* IRQ stub: Push dummy error code to maintain uniform stack frame */
+#define SIZE_OF_REGS 128
+
 .macro mac_IRQStub vector
 .global stub_ISRStub_\vector
 .type stub_ISRStub_\vector, @function
 stub_ISRStub_\vector:
-    push    0                     /* Dummy error code */
+    push    0                   // dummy error code
     SAVE_REGS
-    mov     rdi, \vector          /* Argument 1: vector */
-    mov     rsi, [rsp + 15*8]    /* Argument 2: error code (now at a fixed offset) */
-    mov     rdx, rsp              /* Argument 3: pointer to Registers struct */
 
-    mov     rbp, rsp
+    mov     rdi, \vector
+    mov     rsi, [rsp + SIZE_OF_REGS]
+    mov     rdx, rsp
+
+    mov     rbx, rsp
     and     rsp, -16
-    sub     rsp, 8
     call    IRQHandler
-    mov     rsp, rbp
+    mov     rsp, rbx
 
     RESTORE_REGS
-    add     rsp, 8                /* Discard dummy error code */
+    add     rsp, 8              // remove dummy error code
     iretq
 .endm
 
-/* Exception stub with CPU-pushed error code */
 .macro mac_ISRErrStub vector
 .global stub_ISRStub_\vector
 .type stub_ISRStub_\vector, @function
 stub_ISRStub_\vector:
     SAVE_REGS
+
     mov     rdi, \vector
-    mov     rsi, [rsp + 15*8]    /* Error code */
+    mov     rsi, [rsp + SIZE_OF_REGS]
     mov     rdx, rsp
 
-    mov     rbp, rsp
+    mov     rbx, rsp
     and     rsp, -16
-    sub     rsp, 8
     call    ExceptionHandler
-    mov     rsp, rbp
+    mov     rsp, rbx
 
     RESTORE_REGS
-    add     rsp, 8                /* Discard hardware error code */
+    add     rsp, 8              // remove hardware error code
     iretq
 .endm
 
-/* Exception stub without error code */
 .macro mac_ISRNoErrStub vector
 .global stub_ISRStub_\vector
 .type stub_ISRStub_\vector, @function
 stub_ISRStub_\vector:
-    push    0                     /* Dummy error code */
+    push    0                   // dummy error code
     SAVE_REGS
+
     mov     rdi, \vector
-    mov     rsi, [rsp + 15*8]
+    mov     rsi, [rsp + SIZE_OF_REGS]
     mov     rdx, rsp
 
-    mov     rbp, rsp
+    mov     rbx, rsp
     and     rsp, -16
-    sub     rsp, 8
     call    ExceptionHandler
-    mov     rsp, rbp
+    mov     rsp, rbx
 
     RESTORE_REGS
-    add     rsp, 8                /* Discard dummy error code */
+    add     rsp, 8              // remove dummy error code
     iretq
 .endm

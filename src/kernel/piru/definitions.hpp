@@ -6,6 +6,7 @@
 
 #define PACKED __attribute__((__packed__))
 #define ALIGNED(x) __attribute__((__aligned__(x)))
+#define USED __attribute__((__used__))
 
 extern "C" {
     void *memcpy(void * dest, const void * src, size_t n);

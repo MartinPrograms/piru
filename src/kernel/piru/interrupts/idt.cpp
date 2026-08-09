@@ -45,8 +45,8 @@ namespace piru::interrupts {
         _allocatedVectors[2] = 0xFF;
         _allocatedVectors[3] = 0xFF;
 
-        // Reserve 253, 254 and 255
-        _allocatedVectors[31] = 0xE0; // 11100000
+        // Reserve 8 irqs.
+        _allocatedVectors[31] = 0xFF;
 
         RegisterIRQHandler(APIC_SLEEP_VECTOR, [](registers* regs) {
             kernel::GetInstance().GetCpu().apic.EndSleep();
@@ -58,6 +58,10 @@ namespace piru::interrupts {
             while (true) {
                 asm volatile ("hlt");
             }
+        });
+
+        RegisterIRQHandler(PAGING_TLB_SHOOTDOWN, [](registers* regs) {
+            memory::paging::InvalidateTlb(kernel::GetInstance().data.paging.GetShootdownAddress());
         });
     }
 

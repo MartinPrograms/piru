@@ -120,6 +120,13 @@ namespace piru::core {
         controlWord = 0x37F;
         asm volatile("fldcw %0" :: "m"(controlWord));
         asm volatile("ldmxcsr %0" :: "m"(mxcsr));
+
+        if (hasAVX) {
+            _useXSave = true;
+            uint32_t eax, edx;
+            asm volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+            _xsaveMask = ((uint64_t)edx << 32) | eax;
+        }
     }
 
     void cpu::WriteMSR(uint32_t msr, uint64_t value) {
@@ -136,6 +143,48 @@ namespace piru::core {
         uint64_t out;
         asm volatile ("rdtsc" : "=A"(out));
         return out;
+    }
+
+    void cpu::SaveFpuState(void *fpuState) {
+        if ((uint64_t)fpuState % 64 != 0) {
+            PANIC("FPU state buffer must be 64-byte aligned!");
+        }
+
+        if (_useXSave) {
+            uint32_t eax = (uint32_t)_xsaveMask;
+            uint32_t edx = (uint32_t)(_xsaveMask >> 32);
+            asm volatile ("xsave (%0)" : : "r"(fpuState), "a"(eax), "d"(edx) : "memory");
+        } else {
+            asm volatile ("fxsave (%0)" : : "r"(fpuState) : "memory");
+        }
+    }
+
+    void cpu::RestoreFpuState(void *fpuState) {
+        if ((uint64_t)fpuState % 64 != 0) {
+            PANIC("FPU state buffer must be 64-byte aligned!");
+        }
+
+        if (_useXSave) {
+            uint32_t xcr0Low, xcr0High;
+            asm volatile("xgetbv" : "=a"(xcr0Low), "=d"(xcr0High) : "c"(0));
+            uint64_t xcr0 = ((uint64_t)xcr0High << 32) | xcr0Low;
+            if ((xcr0 & _xsaveMask) != _xsaveMask) {
+                LOG_ERROR("XCR0 mismatch on core {}: xcr0={}, requested={}", interrupts::gdt::GetCpuId(), xcr0, _xsaveMask);
+                PANIC("XRSTOR would fault: XCR0 does not cover requested mask!");
+            }
+
+            uint32_t eax = (uint32_t)_xsaveMask;
+            uint32_t edx = (uint32_t)(_xsaveMask >> 32);
+            asm volatile ("xrstor (%0)" : : "r"(fpuState), "a"(eax), "d"(edx) : "memory");
+        } else {
+            asm volatile ("fxrstor (%0)" : : "r"(fpuState) : "memory");
+        }
+    }
+
+    uint64_t cpu::FpuStateSize() {
+        uint32_t eax, ebx, ecx, edx;
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0xD), "c"(0));
+        return ebx;
     }
 
     bool cpu::CpuId(uint64_t leaf, uint64_t *eax, uint64_t *ebx, uint64_t *ecx, uint64_t *edx) {

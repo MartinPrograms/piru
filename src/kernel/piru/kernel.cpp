@@ -115,15 +115,122 @@ namespace piru {
         data.subsystem_manager.Initialize();
     }
 
+    struct MandelbrotJob {
+        int width = 400;
+        int height = 400;
+        int maxIterations = 25;
+        uint32_t* framebuffer = nullptr;
+
+        double minRe = -2.0;
+        double maxRe = 1.0;
+        double minIm = -1.2;
+        double maxIm = 1.2;
+
+        std::atomic<int> nextRow{0};
+    };
+
+    void RenderMandelbrotWorker(MandelbrotJob* job) {
+        double reFactor = (job->maxRe - job->minRe) / (job->width - 1);
+        double imFactor = (job->maxIm - job->minIm) / (job->height - 1);
+        double aspect = (double)job->width / (double)job->height;
+
+        while (true) {
+            // Fetch the next available row atomically
+            int y = job->nextRow.fetch_add(1, std::memory_order_relaxed);
+            if (y >= job->height) {
+                break; // All rows are being processed or finished
+            }
+
+            // Calculate the imaginary component for this specific row
+            double c_im = job->maxIm - y * imFactor;
+            uint32_t* rowBuffer = &job->framebuffer[y * job->width];
+
+            for (int x = 0; x < job->width; ++x) {
+                double c_re = job->minRe + (x * aspect) * reFactor;
+
+                double z_re = c_re;
+                double z_im = c_im;
+                int isInside = 1;
+                int n = 0;
+
+                for (n = 0; n < job->maxIterations; ++n) {
+                    double z_re2 = z_re * z_re;
+                    double z_im2 = z_im * z_im;
+
+                    if (z_re2 + z_im2 > 4.0) {
+                        isInside = 0;
+                        break;
+                    }
+
+                    z_im = 2.0 * z_re * z_im + c_im;
+                    z_re = z_re2 - z_im2 + c_re;
+                }
+
+                // Map iteration counts to a visible color scheme
+                if (isInside) {
+                    rowBuffer[x] = 0x00000000; // Black for the set interior
+                } else {
+                    // A smooth, fast procedural blue/cyan gradient
+                    uint8_t r = 0;
+                    uint8_t g = (n * 7) % 256;
+                    uint8_t b = (n * 13) % 256;
+
+                    // Assuming XRGB or ARGB 32-bit color format
+                    rowBuffer[x] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+
+    void DisplayFramebuffer(MandelbrotJob* job, limine_framebuffer_response *framebuffer) {
+        for (int y = 0; y < job->height; ++y) {
+            for (int x = 0; x < job->width; ++x) {
+                uint32_t color = job->framebuffer[y * job->width + x];
+                ((uint32_t*)framebuffer->framebuffers[0]->address)[y * framebuffer->framebuffers[0]->pitch / 4 + x] = color;
+            }
+        }
+    }
+
     void kernel::Start() {
+        data.paging.EnableShootdown();
+
         auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
 
-        for (size_t i = 0; i < GetCpuCount() * 8; i++) {
-            threading->CreateThread([](void* arg) {
-                while (true) {
-                    LOG_DEBUG("Thread {} is running on CPU {}", (uint64_t)arg, interrupts::gdt::GetCpuId());
+        // FIX: Allocate the job on the heap so it survives function exit!
+        auto* job = new MandelbrotJob();
+        job->framebuffer = new uint32_t[job->width * job->height];
+
+        RenderMandelbrotWorker(job); // Pass pointer
+        DisplayFramebuffer(job, boot::limine::framebuffer_request.response);
+
+        LOG_DEBUG("The above took quite a bit. Since it was singlethreaded!");
+        LOG_DEBUG("Now we are starting the multithreaded one!");
+        memset(job->framebuffer, 0, job->width * job->height * sizeof(uint32_t));
+
+        asm volatile ("sti");
+        GetCpu().apic.Sleep(1000);
+        DisplayFramebuffer(job, boot::limine::framebuffer_request.response);
+
+        job->nextRow.store(0, std::memory_order_relaxed);
+
+        // Capture the pointer by value
+        threading->CreateThread([](void* arg) {
+            auto* localJob = (MandelbrotJob*)arg;
+            while (true) {
+                if (localJob->nextRow.load(std::memory_order_relaxed) >= localJob->height) {
+                    DisplayFramebuffer(localJob, boot::limine::framebuffer_request.response);
+                    break;
                 }
-            }, (void*)i, false, GetCpu().pageState);
+                GetInstance().data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->Yield();
+            }
+            LOG_DEBUG("Finished multithreaded mandelbrot");
+            // Optional: delete localJob->framebuffer; delete localJob; if you want to clean up here
+        }, job, false, GetCpu().pageState);
+
+        for (size_t i = 0; i < GetCpuCount(); i++) {
+            threading->CreateThread([](void* arg) {
+                RenderMandelbrotWorker((MandelbrotJob*)arg);
+            }, job, false, GetCpu().pageState);
         }
 
         _schedulerReady.store(true, std::memory_order_release);
@@ -140,8 +247,6 @@ namespace piru {
             asm volatile ("cli");
             auto &kernel = kernel::GetInstance();
             kernel.GetCpu().apic.SendIPIAllExcludingSelf(interrupts::idt::PANIC_VECTOR);
-
-            fmt::format(stream::debug, "\n\n{}", kernel);
 
             // Halt the CPU
             while (true) {

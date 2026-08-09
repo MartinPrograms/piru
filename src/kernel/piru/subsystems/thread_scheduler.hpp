@@ -38,16 +38,16 @@ namespace piru::subsystems {
 
         constexpr static uint64_t THREAD_TIME = 10; // 10 ms per thread
         constexpr static size_t KERNEL_STACK_SIZE = 16 * 1024; // 16KB
-        constexpr static size_t FPU_STATE_SIZE = 1024; // Safe for AVX/AVX512, query CPUID 0x0D for exact size
 
         [[=subsystem_constructor_tag]] thread_scheduler(heap_allocator& allocator);
 
         Result Initialize();
 
         uint64_t CreateThread(entryPoint entry, void* arg, bool isUser, memory::paging::state* pageState);
-        void DestroyThread(uint64_t threadId);
+        void ExitCurrentThread();
 
         void Tick(interrupts::idt::registers *interruptContext);
+
         void Yield();
         void Sleep(uint64_t ms);
 
@@ -55,18 +55,23 @@ namespace piru::subsystems {
         thread_control_block* GetNextThread();
 
         void StartCore();
+        bool IsCoreInitialized();
 
     private:
         heap_allocator& allocator;
         threading::spinlock _lock;
         heap_allocator::state* _threadState{};
+        core::cpu& _cpu;
+        uint8_t *_cleanFpuState{};
 
         thread_control_block* _currentThread[system::MaxCpuCount]{};
         thread_control_block* _idleThread[system::MaxCpuCount]{};
         list<thread_control_block*> _threads;
         size_t _nextThreadIndex{};
+        bool _initializedCores[system::MaxCpuCount]{};
 
         thread_control_block * CreateIdleThread();
+        void ResetTimer();
         uint64_t GetNewId();
     };
 }

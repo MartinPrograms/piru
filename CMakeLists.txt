@@ -18,7 +18,6 @@ set(COMPILE_FLAGS
         -mno-red-zone
         -m64
         -mabi=sysv
-        -mno-sse
         -mno-sse2
         -mno-mmx
         -mno-avx

@@ -24,7 +24,7 @@ namespace piru::interrupts {
         } PACKED;
 
         struct registers {
-            uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15;
+            uint64_t _pad0, rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15;
             uint64_t errorCode;
             uint64_t rip;
             uint64_t cs;
@@ -39,6 +39,7 @@ namespace piru::interrupts {
         constexpr static uint8_t APIC_SLEEP_VECTOR = 0xFF - 1;
         constexpr static uint8_t THREAD_SCHEDULER_VECTOR = 0xFF - 2;
         constexpr static uint8_t PANIC_VECTOR = 0xFF - 3;
+        constexpr static uint8_t PAGING_TLB_SHOOTDOWN = 0xFF - 4;
 
         void Initialize();
         void InitializeCpu();

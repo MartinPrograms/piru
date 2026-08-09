@@ -51,14 +51,22 @@ namespace piru::memory {
 
         uint64_t GetPhysicalAddress(state *state, uint64_t vaddr);
         [[nodiscard]] bool IsMapped(state *state, uint64_t vaddr);
+        [[nodiscard]] uint64_t GetShootdownAddress() const;
 
         available_virtual_address_range FindAvailableVirtualAddressRange(state *state, uintptr_t start, uintptr_t end, size_t pageCount);
         available_virtual_address_range FindAvailableVirtualAddressRangeKernel(size_t count);
+
+        static void InvalidateTlb(uint64_t vaddr);
+        static void ReloadCR3();
+
+        void EnableShootdown();
 
     private:
         threading::spinlock _lock{};
         physical_memory_manager& _pmm;
         state _kernelState{};
+        uint64_t _shootdownAddress;
+        bool _shootdownEnabled;
 
         static constexpr uint64_t PointerMask = 0x000FFFFFFFFFF000; // Mask to get the address portion of a page table entry
         static constexpr uint64_t FlagsMask = 0xFFF0000000000FFF; // Mask to get the flags portion of a page table entry

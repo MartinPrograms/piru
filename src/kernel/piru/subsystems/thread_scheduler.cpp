@@ -12,8 +12,7 @@ extern "C" {
     void ThreadExited() {
         auto &kernel = piru::kernel::GetInstance();
         auto threader = kernel.data.subsystem_manager.GetSubsystem<piru::subsystems::thread_scheduler>();
-        threader->DestroyThread(threader->GetCurrentThread()->id);
-        threader->Tick(nullptr);
+        threader->ExitCurrentThread();
     }
 }
 
@@ -21,12 +20,18 @@ namespace piru::subsystems {
     void HandleThreadInterrupt(interrupts::idt::registers * registers) {
         auto &kernel = kernel::GetInstance();
         auto threader = kernel.data.subsystem_manager.GetSubsystem<thread_scheduler>();
+        if (!threader->IsCoreInitialized())
+            return;
+
         threader->Tick(registers);
         auto thread = threader->GetCurrentThread();
+
+        bool wasFirstRun = thread->isFirstRun;
+        thread->isFirstRun = false;
+
         kernel.GetCpu().apic.EOI();
 
-        if (thread->isFirstRun){
-            thread->isFirstRun = false;
+        if (wasFirstRun) {
             ThreadIrqFirstRunExit(reinterpret_cast<uint64_t>(thread->rsp));
         } else {
             ThreadIrqExit(reinterpret_cast<uint64_t>(thread->rsp));
@@ -39,7 +44,7 @@ namespace piru::subsystems {
         }
     }
 
-    thread_scheduler::thread_scheduler(heap_allocator &allocator) : allocator(allocator) {
+    thread_scheduler::thread_scheduler(heap_allocator &allocator) : allocator(allocator), _cpu(kernel::GetInstance().data.cpu) {
 
     }
 
@@ -50,6 +55,10 @@ namespace piru::subsystems {
             LOG_ERROR("Failed to create thread scheduler state!");
             return Result::FAILURE;
         }
+
+        _cleanFpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
+        memset(_cleanFpuState, 0, math::Min((size_t)576, core::cpu::FpuStateSize()));
+        _cpu.SaveFpuState(_cleanFpuState);
 
         kernel::GetInstance().data.idt.RegisterIRQHandler(interrupts::idt::THREAD_SCHEDULER_VECTOR, HandleThreadInterrupt);
 
@@ -70,10 +79,9 @@ namespace piru::subsystems {
             threading::spinlock::scoped_lock lock(_lock, true);
 
             void* stackBase = _threadState->Allocate(KERNEL_STACK_SIZE, 16);
-            uint8_t* fpuState = (uint8_t*)_threadState->Allocate(FPU_STATE_SIZE, 64);
-            memset(fpuState, 0, FPU_STATE_SIZE);
+            uint8_t* fpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
+            memcpy(fpuState, _cleanFpuState, core::cpu::FpuStateSize());
 
-            // asm volatile("fninit; xsave %0" : : "m"(*fpuState) : "memory");
             tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
 
             *tcb = {
@@ -121,19 +129,15 @@ namespace piru::subsystems {
         return tcb->id;
     }
 
-    void thread_scheduler::DestroyThread(uint64_t threadId) {
-        threading::spinlock::scoped_lock lock(_lock, true);
-        auto index = _threads.IndexOf([](thread_control_block* const &t, void* data) {
-            return t->id == *(uint64_t*)data;
-        }, &threadId);
-
-        if (index == _threads.npos) {
-            LOG_ERROR("Failed to destroy thread with ID {}: not found in ready threads!", threadId);
-            return;
+    void thread_scheduler::ExitCurrentThread() {
+        {
+            threading::spinlock::scoped_lock lock(_lock, true);
+            auto current = GetCurrentThread();
+            if (current) {
+                current->tcbState = state::DEAD;
+            }
         }
-
-        auto tcb = _threads[index];
-        tcb->tcbState = state::DEAD;
+        Yield();
     }
 
     thread_scheduler::thread_control_block* thread_scheduler::GetNextThread() {
@@ -155,7 +159,8 @@ namespace piru::subsystems {
         auto current = GetCurrentThread();
         auto next = GetNextThread();
 
-        if (!next && !current) {
+        // if there is no other thread to take, and our thread died, just idle.
+        if ((!next && !current) || (!next && current && current->tcbState == state::DEAD)) {
             _currentThread[interrupts::gdt::GetCpuId()] = _idleThread[interrupts::gdt::GetCpuId()];
             return;
         }
@@ -163,26 +168,31 @@ namespace piru::subsystems {
         if (!next)
             next = current;
 
-
         if (current && interruptContext) {
             current->registers = *interruptContext;
             current->rsp = (void*)interruptContext;
-            // asm volatile ("fxsave %0" : "=m"(*current->fpuState));
         }
 
         if (current == next) // continue where we left off.
             return;
 
-        if (current)
+        if (current && current->tcbState != state::DEAD) {
             current->tcbState = state::READY;
+            _cpu.SaveFpuState(current->fpuState);
+        }
 
         next->tcbState = state::RUNNING;
-        // asm volatile ("fxrstor %0" : : "m"(*next->fpuState));
+        _cpu.RestoreFpuState(next->fpuState);
 
         _currentThread[interrupts::gdt::GetCpuId()] = next;
     }
 
+    void thread_scheduler::ResetTimer() {
+        kernel::GetInstance().GetCpu().apic.SetLvtTimer(interrupts::idt::THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, kernel::GetInstance().data.time.GetApicFrequency() / 1000 * THREAD_TIME);
+    }
+
     void thread_scheduler::Yield() {
+        ResetTimer();
         asm volatile ("int $0xFD");
     }
 
@@ -195,8 +205,10 @@ namespace piru::subsystems {
     }
 
     void thread_scheduler::StartCore() {
-        auto apic = kernel::GetInstance().GetCpu().apic;
-        apic.SetLvtTimer(interrupts::idt::THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, kernel::GetInstance().data.time.GetApicFrequency() / 1000 * THREAD_TIME);
+        ResetTimer();
+        _initializedCores[interrupts::gdt::GetCpuId()] = true;
+
+        memory::paging::ReloadCR3();
 
         asm volatile ("sti");
 
@@ -205,14 +217,17 @@ namespace piru::subsystems {
         }
     }
 
+    bool thread_scheduler::IsCoreInitialized() {
+        return _initializedCores[interrupts::gdt::GetCpuId()];
+    }
+
     thread_scheduler::thread_control_block * thread_scheduler::CreateIdleThread() {
         threading::spinlock::scoped_lock lock(_lock, true);
 
         void* stackBase = _threadState->Allocate(KERNEL_STACK_SIZE, 16);
-        uint8_t* fpuState = (uint8_t*)_threadState->Allocate(FPU_STATE_SIZE, 64);
-        memset(fpuState, 0, FPU_STATE_SIZE);
+        uint8_t* fpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
+        memcpy(fpuState, _cleanFpuState, core::cpu::FpuStateSize());
 
-        // asm volatile ("fninit; fxsave %0" : "=m"(*fpuState));
         auto tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
 
         *tcb = {
