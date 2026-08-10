@@ -189,6 +189,7 @@ namespace piru {
                 ((uint32_t*)framebuffer->framebuffers[0]->address)[y * framebuffer->framebuffers[0]->pitch / 4 + x] = color;
             }
         }
+        LOG_DEBUG("Framebuffer displayed for job with dimensions {}x{}", job->width, job->height);
     }
 
     void kernel::Start() {
@@ -224,7 +225,6 @@ namespace piru {
                 GetInstance().data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->Yield();
             }
             LOG_DEBUG("Finished multithreaded mandelbrot");
-            // Optional: delete localJob->framebuffer; delete localJob; if you want to clean up here
         }, job, false, GetCpu().pageState);
 
         for (size_t i = 0; i < GetCpuCount(); i++) {

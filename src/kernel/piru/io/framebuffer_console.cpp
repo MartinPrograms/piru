@@ -44,7 +44,8 @@ namespace piru::io {
             entry->font_scale_x,
             entry->font_scale_y,
             entry->margin,
-            entry->rotation
+            entry->rotation,
+            true
         );
 
         if (!_flantermContext)

@@ -20,7 +20,7 @@ namespace piru::core {
 
         void SaveFpuState(void* fpuState);
         void RestoreFpuState(void* fpuState);
-        static uint64_t FpuStateSize();
+        uint64_t FpuStateSize();
 
         // Features:
         bool CpuId(uint64_t leaf, uint64_t *eax, uint64_t *ebx, uint64_t *ecx, uint64_t *edx);
@@ -29,8 +29,9 @@ namespace piru::core {
     private:
         char _cpuName[49] = "\0";
         uint8_t _cpuNameLength = 0;
-        bool _useXSave = false;
-        uint64_t _xsaveMask = 0;
+        bool _useXSave[system::MaxCpuCount]{};
+        uint64_t _xsaveMask[system::MaxCpuCount]{};
+        uint64_t _fpuStateSize[system::MaxCpuCount]{};
     };
 }
 

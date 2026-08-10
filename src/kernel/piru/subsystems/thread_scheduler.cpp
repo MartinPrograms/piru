@@ -1,278 +1,240 @@
 #include "thread_scheduler.hpp"
 
-#include "kernel.hpp"
 #include "logging.hpp"
-#include <atomic>
+#include "interrupts/idt.hpp"
 
 extern "C" {
-    void ThreadEntryWrapper();
-    void ThreadIrqExit(uint64_t rsp);
-    void ThreadIrqFirstRunExit(uint64_t rsp);
+    extern void ThreadTrampoline();
 
-    void ThreadExited() {
-        auto &kernel = piru::kernel::GetInstance();
-        auto threader = kernel.data.subsystem_manager.GetSubsystem<piru::subsystems::thread_scheduler>();
-        threader->ExitCurrentThread();
+    void ThreadExit() {
+        auto threading = piru::kernel::GetInstance().data.subsystem_manager.GetSubsystem<piru::subsystems::thread_scheduler>();
+        threading->ExitCurrentThread();
+    }
+
+    USED uint64_t HandleIrq(piru::interrupts::idt::registers* regs) {
+        auto threading = piru::kernel::GetInstance().data.subsystem_manager.GetSubsystem<piru::subsystems::thread_scheduler>();
+        auto& apic = piru::kernel::GetInstance().GetCpu().apic;
+
+        if (!threading->IsCoreInitialized()) {
+            apic.EOI();
+            return (uint64_t)regs;
+        }
+
+        auto rsp = threading->Tick(regs);
+        apic.EOI();
+        return rsp;
     }
 }
 
 namespace piru::subsystems {
-    void HandleThreadInterrupt(interrupts::idt::registers * registers) {
-        auto &kernel = kernel::GetInstance();
-        auto threader = kernel.data.subsystem_manager.GetSubsystem<thread_scheduler>();
-        if (!threader->IsCoreInitialized())
-            return;
-
-        threader->Tick(registers);
-        auto thread = threader->GetCurrentThread();
-
-        bool wasFirstRun = thread->isFirstRun;
-        thread->isFirstRun = false;
-
-        kernel.GetCpu().apic.EOI();
-
-        if (wasFirstRun) {
-            ThreadIrqFirstRunExit(reinterpret_cast<uint64_t>(thread->rsp));
-        } else {
-            ThreadIrqExit(reinterpret_cast<uint64_t>(thread->rsp));
-        }
-    }
-
-    void Idle(void* arg) {
-        while (true) {
-            asm volatile("hlt");
-        }
-    }
-
-    thread_scheduler::thread_scheduler(heap_allocator &allocator) : allocator(allocator), _cpu(kernel::GetInstance().data.cpu) {
+    thread_scheduler::thread_scheduler(heap_allocator &allocator) : _allocator(allocator), _cpu(kernel::GetInstance().data.cpu) {
 
     }
-
 
     Result thread_scheduler::Initialize() {
-        _threadState = allocator.CreateState("thread_scheduler", kernel::GetInstance().GetCpu().pageState, true);
-        if (!_threadState) {
-            LOG_ERROR("Failed to create thread scheduler state!");
-            return Result::FAILURE;
-        }
-
-        _cleanFpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
-        memset(_cleanFpuState, 0, math::Min((size_t)576, core::cpu::FpuStateSize()));
+        _threadState = _allocator.CreateState("thread_scheduler_state", kernel::GetInstance().GetCpu().pageState, true);
+        _cleanFpuState = (uint8_t*) _threadState->Allocate(_cpu.FpuStateSize(), 64);
+        memset(_cleanFpuState, 0, _cpu.FpuStateSize());
         _cpu.SaveFpuState(_cleanFpuState);
 
-        kernel::GetInstance().data.idt.RegisterIRQHandler(interrupts::idt::THREAD_SCHEDULER_VECTOR, HandleThreadInterrupt);
+        for (auto & core : _initializedCores)
+            core = false;
 
-        for (auto & i : _currentThread) {
-            i = nullptr;
-        }
-
-        for (size_t i = 0; i < kernel::GetInstance().GetCpuCount(); i++) {
-            _idleThread[kernel::GetInstance().GetCpuId(i)] = CreateIdleThread();
-        }
+        for (auto & currentThread : _currentThread)
+            currentThread = nullptr;
 
         return Result::SUCCESS;
     }
 
     uint64_t thread_scheduler::CreateThread(entryPoint entry, void *arg, bool isUser, memory::paging::state *pageState) {
-        thread_control_block* tcb = nullptr;
-        {
-            threading::spinlock::scoped_lock lock(_lock, true);
+        threading::spinlock::scoped_lock lock(_lock, true);
 
-            void* stackBase = _threadState->Allocate(KERNEL_STACK_SIZE, 16);
-            uint8_t* fpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
-            memcpy(fpuState, _cleanFpuState, core::cpu::FpuStateSize());
+        if (isUser)
+            PANIC("im lazy, not done yet");
 
-            tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
+        thread_control_block tcb = CreateTcb(entry, arg, isUser, pageState, false);
 
-            *tcb = {
-                .id = GetNewId(),
-                .tcbState = state::READY,
-                .rsp = stackBase,
-                .stackBase = stackBase,
-                .rip = nullptr,
-                .arg = arg,
-                .pageState = pageState,
-                .registers = {},
-                .fpuState = fpuState,
-                .isUser = isUser,
-                .isFirstRun = true
-            };
+        auto tcbHeap = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
+        *tcbHeap = tcb;
+        _threads.Add(tcbHeap);
+        _readyThreads.Add(tcbHeap);
 
-            auto* stackPtr = (uint64_t*)((uint8_t*)stackBase + KERNEL_STACK_SIZE);
-
-            uint64_t codeSegment = isUser ? interrupts::gdt::USER_CODE_SELECTOR : interrupts::gdt::KERNEL_CODE_SELECTOR;
-            uint64_t dataSegment = isUser ? interrupts::gdt::USER_DATA_SELECTOR : interrupts::gdt::KERNEL_DATA_SELECTOR;
-            uint64_t initialRflags = 0x202;
-
-            auto push = [](uint64_t*& sp, uint64_t value) {
-                *(--sp) = value;
-            };
-
-            push(stackPtr, dataSegment); // SS
-            push(stackPtr, (uint64_t)stackBase + KERNEL_STACK_SIZE); // RSP
-            push(stackPtr, initialRflags); // RFLAGS
-            push(stackPtr, codeSegment); // CS
-            push(stackPtr, (uint64_t)ThreadEntryWrapper); // RIP
-
-            push(stackPtr, 0); // R15
-            push(stackPtr, 0); // R14
-            push(stackPtr, (uint64_t)arg); // R13
-            push(stackPtr, (uint64_t)entry); // R12
-            push(stackPtr, 0); // RBP
-            push(stackPtr, 0); // RBX
-
-            tcb->rsp = stackPtr;
-            _threads.Add(tcb);
-        }
-
-        kernel::GetInstance().GetCpu().apic.SendIPIAll(interrupts::idt::THREAD_SCHEDULER_VECTOR);
-        return tcb->id;
+        return tcbHeap->id;
     }
 
     void thread_scheduler::ExitCurrentThread() {
-        {
-            threading::spinlock::scoped_lock lock(_lock, true);
-            auto current = GetCurrentThread();
-            if (current) {
-                current->tcbState = state::DEAD;
-            }
-        }
+        auto flags = _lock.lock(true);
+        auto current = GetCurrentThread();
+        if (!current)
+            PANIC("How? Current thread exited, but no current thread exists.");
+
+        current->tcbState = state::DEAD;
+        _deadThreads.Add(current);
+
+        _lock.unlock(flags);
         Yield();
     }
 
-    thread_scheduler::thread_control_block* thread_scheduler::GetNextThread() {
-        size_t count = _threads.Count();
-        if (count == 0) return nullptr;
-
-        for (size_t i = 0; i < count; i++) {
-            size_t index = (i + _nextThreadIndex) % count;
-            if (_threads[index]->tcbState == state::READY) {
-                _nextThreadIndex = (index + 1) % count;
-                return _threads[index];
-            }
-        }
-        return nullptr;
-    }
-
-    void thread_scheduler::Tick(interrupts::idt::registers *interruptContext) {
+    uint64_t thread_scheduler::Tick(interrupts::idt::registers *interruptContext) {
         threading::spinlock::scoped_lock lock(_lock, true);
         auto current = GetCurrentThread();
         auto next = GetNextThread();
 
-        // if there is no other thread to take, and our thread died, just idle.
-        if ((!next && !current) || (!next && current && current->tcbState == state::DEAD)) {
-            _currentThread[interrupts::gdt::GetCpuId()] = _idleThread[interrupts::gdt::GetCpuId()];
-            return;
+        if (!next) {
+            if (current && current->tcbState != state::DEAD) {
+                next = current;
+            } else {
+                next = _idleThread[interrupts::gdt::GetCpuId()];
+            }
         }
 
-        if (!next)
-            next = current;
+        if (current && current->tcbState != state::DEAD)
+            current->userStackTop = (uint64_t)interruptContext;
 
-        if (current && interruptContext) {
-            current->registers = *interruptContext;
-            current->rsp = (void*)interruptContext;
-        }
-
-        if (current == next) // continue where we left off.
-            return;
-
-        if (current && current->tcbState != state::DEAD) {
-            current->tcbState = state::READY;
+        if (current && current != next) {
             _cpu.SaveFpuState(current->fpuState);
         }
 
-        next->tcbState = state::RUNNING;
+        kernel::GetInstance().data.paging.SwitchToPageTable(next->pageState);
+
         _cpu.RestoreFpuState(next->fpuState);
-
         _currentThread[interrupts::gdt::GetCpuId()] = next;
-    }
 
-    void thread_scheduler::ResetTimer() {
-        kernel::GetInstance().GetCpu().apic.SetLvtTimer(interrupts::idt::THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, kernel::GetInstance().data.time.GetApicFrequency() / 1000 * THREAD_TIME);
+        if (current && current->tcbState != state::DEAD) {
+            current->tcbState = state::READY;
+            _readyThreads.Add(current);
+        }
+
+        next->tcbState = state::RUNNING;
+
+        return next->userStackTop;
     }
 
     void thread_scheduler::Yield() {
-        ResetTimer();
-        asm volatile ("int $0xFD");
+        asm volatile ("int $0xFC");
     }
 
     void thread_scheduler::Sleep(uint64_t ms) {
-
+        // TODO.
     }
 
-    thread_scheduler::thread_control_block * thread_scheduler::GetCurrentThread() {
+    thread_scheduler::thread_control_block *thread_scheduler::GetCurrentThread() {
         return _currentThread[interrupts::gdt::GetCpuId()];
     }
 
-    void thread_scheduler::StartCore() {
-        ResetTimer();
-        _initializedCores[interrupts::gdt::GetCpuId()] = true;
+    thread_scheduler::thread_control_block *thread_scheduler::GetNextThread() {
+        if (_readyThreads.Count() > 0) {
+            auto thread = _readyThreads[0];
+            _readyThreads.Remove(thread);
+            return thread;
+        }
 
-        memory::paging::ReloadCR3();
+        return nullptr;
+    }
+
+    void thread_scheduler::StartCore() {
+        {
+            threading::spinlock::scoped_lock lock(_lock, true);
+            _idleThread[interrupts::gdt::GetCpuId()] = CreateIdleThread();
+            _initializedCores[interrupts::gdt::GetCpuId()].store(true, std::memory_order_release);
+        }
+
+        ResetTimer();
 
         asm volatile ("sti");
 
-        while (true) {
-            asm volatile ("hlt");
-        }
+        while (true)
+            asm volatile ("pause"); // wait for timer interrupts
     }
 
     bool thread_scheduler::IsCoreInitialized() {
-        return _initializedCores[interrupts::gdt::GetCpuId()];
+        return _initializedCores[interrupts::gdt::GetCpuId()].load(std::memory_order_acquire);
     }
 
     thread_scheduler::thread_control_block * thread_scheduler::CreateIdleThread() {
-        threading::spinlock::scoped_lock lock(_lock, true);
+        auto tcb = CreateTcb([](void*) { while (true) asm volatile("pause"); }, nullptr, false, kernel::GetInstance().GetCpu().pageState, false);
+        auto mem = _threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
+        return :: new (mem) thread_control_block(tcb);
+    }
 
-        void* stackBase = _threadState->Allocate(KERNEL_STACK_SIZE, 16);
-        uint8_t* fpuState = (uint8_t*)_threadState->Allocate(core::cpu::FpuStateSize(), 64);
-        memcpy(fpuState, _cleanFpuState, core::cpu::FpuStateSize());
-
-        auto tcb = (thread_control_block*)_threadState->Allocate(sizeof(thread_control_block), alignof(thread_control_block));
-
-        *tcb = {
-            .id = GetNewId(),
-            .tcbState = state::READY,
-            .rsp = stackBase,
-            .stackBase = stackBase,
-            .rip = nullptr,
-            .arg = nullptr,
-            .pageState = kernel::GetInstance().GetCpu().pageState,
-            .registers = {},
-            .fpuState = fpuState,
-            .isUser = false,
-            .isFirstRun = true
-        };
-
-        auto* stackPtr = (uint64_t*)((uint8_t*)stackBase + KERNEL_STACK_SIZE);
-
-        uint64_t codeSegment = interrupts::gdt::KERNEL_CODE_SELECTOR;
-        uint64_t dataSegment = interrupts::gdt::KERNEL_DATA_SELECTOR;
-        uint64_t initialRflags = 0x202;
-
-        auto push = [](uint64_t*& sp, uint64_t value) {
-            *(--sp) = value;
-        };
-
-        push(stackPtr, dataSegment); // SS
-        push(stackPtr, (uint64_t)stackBase + KERNEL_STACK_SIZE); // RSP
-        push(stackPtr, initialRflags); // RFLAGS
-        push(stackPtr, codeSegment); // CS
-        push(stackPtr, (uint64_t)ThreadEntryWrapper); // RIP
-
-        push(stackPtr, 0); // R15
-        push(stackPtr, 0); // R14
-        push(stackPtr, (uint64_t)nullptr); // R13
-        push(stackPtr, (uint64_t)Idle); // R12
-        push(stackPtr, 0); // RBP
-        push(stackPtr, 0); // RBX
-
-        tcb->rsp = stackPtr;
-        return tcb;
+    void thread_scheduler::ResetTimer() {
+        kernel::GetInstance().GetCpu().apic.SetLvtTimer(interrupts::idt::THREAD_SCHEDULER_VECTOR, interrupts::TimerDivide::By1, true, (THREAD_TIME * kernel::GetInstance().data.time.GetApicFrequency()) / 1000);
     }
 
     uint64_t thread_scheduler::GetNewId() {
         static std::atomic<uint64_t> id{0};
         return ++id;
+    }
+
+    thread_scheduler::thread_control_block thread_scheduler::CreateTcb(entryPoint entry, void *arg, bool isUser, memory::paging::state *pageState, bool createUStack) {
+        auto fpuState = _threadState->Allocate(_cpu.FpuStateSize(), 64);
+        memcpy(fpuState, _cleanFpuState, _cpu.FpuStateSize());
+
+        auto kStackBase = (uint64_t)_threadState->Allocate(KERNEL_STACK_SIZE, 16);
+        auto kStackTop = kStackBase + KERNEL_STACK_SIZE;
+
+        uint64_t uStackBase = kStackBase;
+        if (createUStack)
+            uStackBase = (uint64_t)_threadState->Allocate(USER_STACK_SIZE, 16);
+
+        uint64_t uStackTop = kStackTop;
+        if (createUStack)
+            uStackTop = uStackBase + USER_STACK_SIZE;
+
+        thread_control_block tcb = {
+            .id = GetNewId(),
+            .tcbState = state::READY,
+            .isUser = isUser,
+            .remainingSleepTime = 0,
+            .kernelStackBase = kStackBase,
+            .kernelStackTop = kStackTop,
+            .userStackBase = uStackBase,
+            .userStackTop = uStackTop,
+            .pageState = pageState,
+            .entry = entry,
+            .arg = arg,
+            .fpuStateSize = _cpu.FpuStateSize(),
+            .fpuState = (uint8_t*)fpuState,
+        };
+
+        auto pushFn = [](uint64_t*& ptr, uint64_t value) {
+            *(--ptr) = value;
+        };
+
+        auto stack = (uint64_t*)tcb.kernelStackTop;
+
+        auto ss = isUser ? interrupts::gdt::USER_DATA_SELECTOR : interrupts::gdt::KERNEL_DATA_SELECTOR;
+        auto cs = isUser ? interrupts::gdt::USER_CODE_SELECTOR : interrupts::gdt::KERNEL_CODE_SELECTOR;
+
+        auto rflags = 0x202; // interrupts enabled.
+
+        // SS, RSP, RFLAGS, CS, RIP
+        // RIP will point to the trampoline, which loads R13 into RSI, then jumps too R12 which is EntryPoint.
+        pushFn(stack, ss);
+        pushFn(stack, tcb.userStackTop);
+        pushFn(stack, rflags);
+        pushFn(stack, cs);
+        pushFn(stack, (uint64_t)ThreadTrampoline);
+
+        pushFn(stack, 0); // r15
+        pushFn(stack, 0); // r14
+        pushFn(stack, (uint64_t)tcb.arg); // r13
+        pushFn(stack, (uint64_t)tcb.entry); // r12
+        pushFn(stack, 0); // r11
+        pushFn(stack, 0); // r10
+        pushFn(stack, 0); // r9
+        pushFn(stack, 0); // r8
+        pushFn(stack, 0); // rbp
+        pushFn(stack, 0); // rdi
+        pushFn(stack, 0); // rsi
+        pushFn(stack, 0); // rdx
+        pushFn(stack, 0); // rcx
+        pushFn(stack, 0); // rbx
+        pushFn(stack, 0); // rax
+        pushFn(stack, 0); // rax (pad)
+
+        tcb.userStackTop = (uint64_t)stack;
+
+        return tcb;
     }
 }

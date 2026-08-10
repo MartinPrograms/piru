@@ -52,7 +52,15 @@ void* operator new[](size_t size){
     return reinterpret_cast<void*>(SizedNewAllocate(size));
 }
 
+void* operator new (size_t size, std::align_val_t alignment) {
+    return reinterpret_cast<void*>(SizedNewAllocate(size));
+}
+
 void operator delete(void* ptr, size_t size) noexcept {
+    FreeWithHeader(ptr);
+}
+
+void operator delete(void* ptr, std::align_val_t alignment) noexcept {
     FreeWithHeader(ptr);
 }
 

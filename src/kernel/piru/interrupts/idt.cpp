@@ -15,7 +15,7 @@ void IRQHandler(uint8_t irq, uint64_t errorCode, piru::interrupts::idt::register
 }
 
 void ExceptionHandler(uint64_t exceptionVector, uint64_t errorCode, piru::interrupts::idt::registers* regs) {
-    LOG_ERROR("Exception occurred: vector={}, errorCode={}", exceptionVector, errorCode);
+    LOG_ERROR("Exception occurred on CPU {}: vector={}, errorCode={}", piru::interrupts::gdt::GetCpuId(), exceptionVector, errorCode);
     LOG_ERROR("Registers: {}", *regs);
     PANIC("Exception occurred, halting the system.");
 }

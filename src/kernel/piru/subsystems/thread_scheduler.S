@@ -1,36 +1,39 @@
 #include "interrupts/macros.S"
 
-// External:
-.global ThreadExited
-.type ThreadExited, @function
+// Functions defined by this file
+.global ThreadTrampoline
+.type ThreadTrampoline, @function
 
-// Defined here:
-.global ThreadEntryWrapper
-.global ThreadIrqExit // void ThreadIrqExit(uint64_t valueToSetRSPTo)
-.global ThreadIrqFirstRunExit // void ThreadIrqFirstRunExit(uint64_t valueToSetRSPTo)
-.type ThreadEntryWrapper, @function
-.type ThreadIrqExit, @function
-.type ThreadIrqFirstRunExit, @function
+.global stub_ISRStub_252
+.type stub_ISRStub_252, @function
+// End of locally defined functions
 
-ThreadEntryWrapper:
-    mov %rdi, %r13
-    call %r12
-    call ThreadExited // Happens if the thread exits.
+// External functions
+.global ThreadExit
+.type ThreadExit, @function
 
-ThreadIrqExit:
-    mov %rsp, %rdi // rdi has our new stack pointer
+.global HandleIrq
+.type HandleIrq, @function
+// End of external functions
+
+.text
+
+ThreadTrampoline:
+    mov rdi, r13
+    call r12
+    call ThreadExit
+.LHang:
+    cli
+    hlt
+    jmp .LHang
+
+// Threading timer interrupt
+stub_ISRStub_252:
+    SAVE_REGS
+
+    mov rdi, rsp
+    call HandleIrq
+    mov rsp, rax
+
     RESTORE_REGS
-    add %rsp, 8
-    iretq
-
-ThreadIrqFirstRunExit:
-    mov %rsp, %rdi // rdi has our new stack pointer
-
-    pop %rbx
-    pop %rbp
-    pop %r12
-    pop %r13
-    pop %r14
-    pop %r15
-
     iretq
