@@ -105,9 +105,6 @@ namespace piru {
             while (_schedulerReady.load(std::memory_order_acquire) == false) {
                 asm ("pause");
             }
-
-            auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
-            threading->StartCore();
         }
     }
 
@@ -194,47 +191,6 @@ namespace piru {
 
     void kernel::Start() {
         data.paging.EnableShootdown();
-
-        auto threading = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
-
-        // FIX: Allocate the job on the heap so it survives function exit!
-        auto* job = new MandelbrotJob();
-        job->framebuffer = new uint32_t[job->width * job->height];
-
-        RenderMandelbrotWorker(job); // Pass pointer
-        DisplayFramebuffer(job, boot::limine::framebuffer_request.response);
-
-        LOG_DEBUG("The above took quite a bit. Since it was singlethreaded!");
-        LOG_DEBUG("Now we are starting the multithreaded one!");
-        memset(job->framebuffer, 0, job->width * job->height * sizeof(uint32_t));
-
-        asm volatile ("sti");
-        GetCpu().apic.Sleep(1000);
-        DisplayFramebuffer(job, boot::limine::framebuffer_request.response);
-
-        job->nextRow.store(0, std::memory_order_relaxed);
-
-        // Capture the pointer by value
-        threading->CreateThread([](void* arg) {
-            auto* localJob = (MandelbrotJob*)arg;
-            while (true) {
-                if (localJob->nextRow.load(std::memory_order_relaxed) >= localJob->height) {
-                    DisplayFramebuffer(localJob, boot::limine::framebuffer_request.response);
-                    break;
-                }
-                GetInstance().data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->Yield();
-            }
-            LOG_DEBUG("Finished multithreaded mandelbrot");
-        }, job, false, GetCpu().pageState);
-
-        for (size_t i = 0; i < GetCpuCount(); i++) {
-            threading->CreateThread([](void* arg) {
-                RenderMandelbrotWorker((MandelbrotJob*)arg);
-            }, job, false, GetCpu().pageState);
-        }
-
-        _schedulerReady.store(true, std::memory_order_release);
-        threading->StartCore();
     }
 
     struct kernel::cpu &kernel::GetCpu() {

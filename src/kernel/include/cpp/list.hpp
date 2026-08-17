@@ -4,8 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "subsystems/scheduler.hpp"
-
 namespace piru {
     // Depends on implementations of new/delete.
     template<typename T>
