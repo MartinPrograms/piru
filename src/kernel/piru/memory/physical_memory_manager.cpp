@@ -141,6 +141,7 @@ namespace piru::memory {
         for (size_t i = 0; i < pageCount; i++) {
             size_t pageIndex = ((uintptr_t)ptr / system::PageSize) + i;
             if (IsPageSet(_reserved, pageIndex)) PANIC("Attempted to free a reserved page");
+            if (!IsPageSet(_allocated, pageIndex)) PANIC("Attempted to free an already freed page");
             SetPage(_allocated, pageIndex, false);
         }
 
