@@ -10,7 +10,7 @@ endfunction()
 
 function(piru_append_bool_option NAME VAR)
     string(APPEND CONFIG_INCLUDES_CONTENT "\n\tinline constexpr bool ${NAME} = ")
-    piru_append_bool(VAR)
+    piru_append_bool(${VAR})
     string(APPEND CONFIG_INCLUDES_CONTENT ";\n")
     set(CONFIG_INCLUDES_CONTENT "${CONFIG_INCLUDES_CONTENT}" PARENT_SCOPE)
 endfunction()
