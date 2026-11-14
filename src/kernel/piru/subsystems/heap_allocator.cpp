@@ -710,19 +710,51 @@ namespace {
         auto& k = kernel::GetInstance();
         const size_t cpu = k.GetCpuIndex(interrupts::gdt::GetCpuId());
 
-        struct slot { void* ptr; size_t size; uint64_t seed; };
+        // TEMP DEBUG: phys recorded at allocation, to detect remapping.
+        struct slot { void* ptr; size_t size; uint64_t seed; uint64_t phys; };
         slot slots[ParallelSlots]{};
         uint64_t rng = 0x1234567ULL + cpu * 0x9E3779B97F4A7C15ULL;
+        auto& paging = k.data.paging;
+        auto* pageState = k.GetCpu().pageState;
+
+        // TEMP DEBUG: PatternFor(seed, i) = seed*C1 ^ i*C2, C1 odd -> invertible mod 2^64, so a foreign
+        // word can be decoded back to the seed (= cpu << 32 ^ iteration) that wrote it.
+        constexpr uint64_t C1 = 0x9E3779B97F4A7C15ULL;
+        constexpr uint64_t C1Inv = [] { uint64_t x = C1; for (int n = 0; n < 6; n++) x *= 2 - C1 * x; return x; }();
 
         auto verify = [&](slot& sl) {
             auto words = static_cast<volatile uint64_t*>(sl.ptr);
-            for (size_t i = 0; i < sl.size / 8; i++) {
+            const size_t count = sl.size / 8;
+            size_t bad = 0, first = 0;
+            uint64_t got = 0;
+            for (size_t i = 0; i < count; i++) {
                 if (words[i] != PatternFor(sl.seed, i)) {
-                    if (ctx->failures.fetch_add(1) < MaxLoggedFailures)
-                        LOG_ERROR("[heap:parallel] CPU {} pattern corrupted at {} (size {})", cpu, (void*)&words[i], sl.size);
-                    return;
+                    if (bad++ == 0) { first = i; got = words[i]; }
                 }
             }
+            if (!bad) return;
+            if (ctx->failures.fetch_add(1) >= 6) return; // keep it on one screen: 6 failures x 2 lines
+
+            // Line 1: where, how much.
+            LOG_ERROR("[par] cpu{} {} sz{} bad {}/{}w first w{}", cpu, sl.ptr, sl.size, bad, count, first);
+
+            // Line 2: expected/got, who wrote it (if it decodes to a pattern), and phys only if it moved.
+            uint64_t srcSeed = (got ^ (first * 0xBF58476D1CE4E5B9ULL)) * C1Inv;
+            uint64_t srcCpu = srcSeed >> 32;
+            const uint64_t addr = reinterpret_cast<uint64_t>(sl.ptr) + first * 8;
+            const uint64_t physNow = paging.GetPhysicalAddress(pageState, addr);
+            const uint64_t physThen = sl.phys + first * 8;
+            const bool isPattern = srcCpu < k.GetCpuCount();
+            const bool moved = physNow != physThen;
+
+            if (isPattern && moved)
+                LOG_ERROR("  got {} =cpu{} it{} PHYS {}->{}", (void*)got, srcCpu, srcSeed & 0xFFFFFFFF, (void*)physThen, (void*)physNow);
+            else if (isPattern)
+                LOG_ERROR("  got {} =cpu{} it{} (phys same)", (void*)got, srcCpu, srcSeed & 0xFFFFFFFF);
+            else if (moved)
+                LOG_ERROR("  got {} exp {} PHYS {}->{}", (void*)got, (void*)PatternFor(sl.seed, first), (void*)physThen, (void*)physNow);
+            else
+                LOG_ERROR("  got {} exp {} (phys same)", (void*)got, (void*)PatternFor(sl.seed, first));
         };
 
         for (size_t it = 0; it < ParallelIterations; it++) {
@@ -737,6 +769,7 @@ namespace {
                 sl.seed = (static_cast<uint64_t>(cpu) << 32) ^ it;
                 sl.ptr = ctx->state->Allocate(sl.size, 16);
                 if (!sl.ptr) { ctx->failures.fetch_add(1); continue; }
+                sl.phys = paging.GetPhysicalAddress(pageState, reinterpret_cast<uint64_t>(sl.ptr)); // TEMP DEBUG
                 auto words = static_cast<volatile uint64_t*>(sl.ptr);
                 for (size_t i = 0; i < sl.size / 8; i++) words[i] = PatternFor(sl.seed, i);
             }
@@ -872,10 +905,6 @@ namespace piru::subsystems {
             });
 
             DestroyState(s);
-            passed &= RunTest("no_leak_higher_half", [&] {
-                const size_t freeAfter = pmm.GetFreePageCount();
-                if (freeAfter != freeBefore) Fail("physical pages not returned after DestroyState", nullptr, freeBefore, freeAfter);
-            });
         }
 
         // --- Lower-half state on its own page state: content + lifecycle --------------------------

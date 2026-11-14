@@ -25,6 +25,11 @@ namespace piru::memory {
             Dirty = 1 << 6,
             HugePage = 1 << 7,
             Global = 1 << 8,
+            UnmapPending = 1 << 9, // Prevents this from being used by the FindAvailableVirtualAddressRange
+            CopyOnWrite = 1 << 10,
+            OwnsPhysical = 1 << 11, // Free the physical page when unmapping
+            Pinned = 1ULL << 52, // Never swap or move this page
+            Guard = 1ULL << 53, // Throw on access (not present, but still has this flag)
             NoExecute = 1ULL << 63,
         };
 
@@ -57,6 +62,7 @@ namespace piru::memory {
 
         uint64_t GetPhysicalAddress(state *state, uint64_t vaddr);
         [[nodiscard]] bool IsMapped(state *state, uint64_t vaddr);
+        [[nodiscard]] bool IsSlotFree(state *state, uint64_t vaddr);
 
         available_virtual_address_range FindAvailableVirtualAddressRange(state *state, uintptr_t start, uintptr_t end, size_t pageCount, size_t align = 0);
         available_virtual_address_range FindAvailableVirtualAddressRangeKernel(size_t count, size_t align = 0);
@@ -66,9 +72,10 @@ namespace piru::memory {
         available_virtual_address_range MapAnywhere(state *state, uintptr_t start, uintptr_t end, uint64_t paddrStart, size_t pageCount, Flags flags, size_t align = 0);
         available_virtual_address_range MapAnywhereKernel(uint64_t paddrStart, size_t pageCount, Flags flags, size_t align = 0);
 
-        void Shootdown(uint64_t start, size_t pageCount);
+        void Shootdown(state *state, uint64_t start, size_t pageCount);
 
         static void InvalidateTlb(uint64_t vaddr);
+        static uint64_t GetCR3();
         static void ReloadCR3();
         static void IRQShootdown();
         void HandleShootdown();
@@ -82,7 +89,7 @@ namespace piru::memory {
         physical_memory_manager& _pmm;
         state _kernelState{};
         struct {
-            std::atomic<uint64_t> gen; uint64_t start; size_t pageCount; std::atomic<int> pending;
+            std::atomic<uint64_t> gen; uint64_t start; size_t pageCount; std::atomic<int> pending; state* associatedState;
         } _shootdownRequest{};
         bool _shootdownEnabled;
         int _shootdownCount; // amount pending.

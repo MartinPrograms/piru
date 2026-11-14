@@ -150,79 +150,7 @@ namespace piru::memory {
     }
 
     void paging::UnmapPage(state *state, uint64_t vaddr) {
-        uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
-        ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
-
-        PML4* pml4{nullptr};
-        PDP* pdp{nullptr};
-        PD* pd{nullptr};
-        PT* pt{nullptr};
-
-        uintptr_t pdpPhysicalAddress{0};
-        uintptr_t pdPhysicalAddress{0};
-        uintptr_t ptPhysicalAddress{0};
-
-        bool shouldFreePt{false};
-        bool shouldFreePd{false};
-        bool shouldFreePdp{false};
-
-        {
-            threading::spinlock::scoped_lock lock(LockFor(state, vaddr), true);
-
-            // Reverse of the mapping process, but we also need to check if the page tables are present at each level and panic if we try to unmap an address that isn't mapped
-            auto offset = boot::limine::hhdm_request.response->offset;
-
-            pml4 = reinterpret_cast<PML4 *>(reinterpret_cast<uint64_t>(state->pml4) + offset);
-            if (!(pml4->entries[pml4Index] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PML4 entry not present)!");
-
-            pdpPhysicalAddress = pml4->entries[pml4Index] & PointerMask;
-            pdp = reinterpret_cast<PDP *>(reinterpret_cast<uint64_t>(pdpPhysicalAddress) + offset);
-            if (!(pdp->entries[pdpIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PDP entry not present)!");
-
-            pdPhysicalAddress = pdp->entries[pdpIndex] & PointerMask;
-            pd = reinterpret_cast<PD *>(reinterpret_cast<uint64_t>(pdPhysicalAddress) + offset);
-            if (!(pd->entries[pdIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PD entry not present)!");
-
-            ptPhysicalAddress = pd->entries[pdIndex] & PointerMask;
-            pt = reinterpret_cast<PT *>(reinterpret_cast<uint64_t>(ptPhysicalAddress) + offset);
-            if (!(pt->entries[ptIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PT entry not present)!");
-
-            pt->entries[ptIndex] = 0; // Clear the entry to unmap the page
-
-            shouldFreePt = IsTableEmpty(reinterpret_cast<uint64_t*>(pt));
-            if (shouldFreePt)
-                pd->entries[pdIndex] = 0;
-
-            shouldFreePd = IsTableEmpty(reinterpret_cast<uint64_t*>(pd));
-            if (shouldFreePd)
-                pdp->entries[pdpIndex] = 0;
-
-            shouldFreePdp = IsTableEmpty(reinterpret_cast<uint64_t*>(pdp));
-            if (shouldFreePdp && pml4Index < 256)
-                pml4->entries[pml4Index] = 0;
-
-            asm volatile("invlpg (%0)" ::"r"(vaddr) : "memory"); // Invalidate the TLB entry for this page to ensure the unmapping takes effect immediately
-        }
-
-        if (vaddr >= system::EndOfCanonical && _shootdownEnabled) {
-            Shootdown(vaddr, 1);
-        }
-
-        // Check if PT is now empty, and if so, free it and clear the PD entry
-        if (shouldFreePt) {
-            _pmm.Free((void*)ptPhysicalAddress, 1);
-
-            // Check if PD is now empty, and if so, free it and clear the PDP entry
-            if (shouldFreePd) {
-                _pmm.Free((void*)pdPhysicalAddress, 1);
-
-                // Check if PDP is now empty, and if so, free it and clear the PML4 entry
-                // Do not free kernel page tables.
-                if (shouldFreePdp && pml4Index < 256) {
-                    _pmm.Free((void*)pdpPhysicalAddress, 1);
-                }
-            }
-        }
+        UnmapRange(state, vaddr, 1);
     }
 
     void paging::MapRange(state *state, uint64_t vaddrStart, uint64_t paddrStart, size_t pageCount, Flags flags) {
@@ -232,8 +160,69 @@ namespace piru::memory {
     }
 
     void paging::UnmapRange(state *state, uint64_t vaddrStart, size_t pageCount) {
-        for (size_t i = 0; i < pageCount; ++i) {
-            UnmapPage(state, vaddrStart + i * system::PageSize);
+        {
+            threading::spinlock::scoped_lock lock(LockFor(state, vaddrStart), true);
+
+            for (size_t i = 0; i < pageCount; i++) {
+                uintptr_t vaddr = vaddrStart + (i * system::PageSize);
+
+                uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
+                ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
+
+                auto offset = boot::limine::hhdm_request.response->offset;
+
+                auto pml4 = reinterpret_cast<PML4 *>(reinterpret_cast<uint64_t>(state->pml4) + offset);
+                if (!(pml4->entries[pml4Index] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PML4 entry not present)!");
+
+                auto pdpPhysicalAddress = pml4->entries[pml4Index] & PointerMask;
+                auto pdp = reinterpret_cast<PDP *>(reinterpret_cast<uint64_t>(pdpPhysicalAddress) + offset);
+                if (!(pdp->entries[pdpIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PDP entry not present)!");
+
+                auto pdPhysicalAddress = pdp->entries[pdpIndex] & PointerMask;
+                auto pd = reinterpret_cast<PD *>(reinterpret_cast<uint64_t>(pdPhysicalAddress) + offset);
+                if (!(pd->entries[pdIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PD entry not present)!");
+
+                auto ptPhysicalAddress = pd->entries[pdIndex] & PointerMask;
+                auto pt = reinterpret_cast<PT *>(reinterpret_cast<uint64_t>(ptPhysicalAddress) + offset);
+                if (!(pt->entries[ptIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PT entry not present)!");
+
+                pt->entries[ptIndex] = (pt->entries[ptIndex] & PointerMask) | (uint64_t)Flags::UnmapPending;
+
+                asm volatile("invlpg (%0)" ::"r"(vaddr) : "memory"); // Invalidate the TLB entry for this page to ensure the unmapping takes effect immediately
+            }
+        }
+
+        if (_shootdownEnabled) {
+            Shootdown(state, vaddrStart, pageCount);
+        }
+
+        {
+            threading::spinlock::scoped_lock lock(LockFor(state, vaddrStart), true);
+            for (size_t i = 0; i < pageCount; i++) {
+                uintptr_t vaddr = vaddrStart + (i * system::PageSize);
+
+                uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
+                ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
+
+                auto offset = boot::limine::hhdm_request.response->offset;
+
+                auto pml4 = reinterpret_cast<PML4 *>(reinterpret_cast<uint64_t>(state->pml4) + offset);
+                if (!(pml4->entries[pml4Index] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PML4 entry not present)!");
+
+                auto pdpPhysicalAddress = pml4->entries[pml4Index] & PointerMask;
+                auto pdp = reinterpret_cast<PDP *>(reinterpret_cast<uint64_t>(pdpPhysicalAddress) + offset);
+                if (!(pdp->entries[pdpIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PDP entry not present)!");
+
+                auto pdPhysicalAddress = pdp->entries[pdpIndex] & PointerMask;
+                auto pd = reinterpret_cast<PD *>(reinterpret_cast<uint64_t>(pdPhysicalAddress) + offset);
+                if (!(pd->entries[pdIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PD entry not present)!");
+
+                auto ptPhysicalAddress = pd->entries[pdIndex] & PointerMask;
+                auto pt = reinterpret_cast<PT *>(reinterpret_cast<uint64_t>(ptPhysicalAddress) + offset);
+                if (!(pt->entries[ptIndex] & static_cast<uint64_t>(Flags::UnmapPending))) PANIC("Attempted to unmap a virtual address that is not pending (PT entry not pending)!");
+
+                pt->entries[ptIndex] = 0;
+            }
         }
     }
 
@@ -268,8 +257,33 @@ namespace piru::memory {
         return (GetPhysicalAddress(state, vaddr) != 0);
     }
 
+    bool paging::IsSlotFree(state *state, uint64_t vaddr) {
+        threading::spinlock::scoped_lock lock(LockFor(state, vaddr), true);
+
+        uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
+        ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
+
+        auto offset = boot::limine::hhdm_request.response->offset;
+
+        auto pml4 = reinterpret_cast<PML4 *>(reinterpret_cast<uint64_t>(state->pml4) + offset);
+        if (!(pml4->entries[pml4Index] & static_cast<uint64_t>(Flags::Present))) return true;
+
+        uintptr_t pdpPhysicalAddress = pml4->entries[pml4Index] & PointerMask;
+        auto pdp = reinterpret_cast<PDP *>(reinterpret_cast<uint64_t>(pdpPhysicalAddress) + offset);
+        if (!(pdp->entries[pdpIndex] & static_cast<uint64_t>(Flags::Present))) return true;
+
+        uintptr_t pdPhysicalAddress = pdp->entries[pdpIndex] & PointerMask;
+        auto pd = reinterpret_cast<PD *>(reinterpret_cast<uint64_t>(pdPhysicalAddress) + offset);
+        if (!(pd->entries[pdIndex] & static_cast<uint64_t>(Flags::Present))) return true;
+
+        uintptr_t ptPhysicalAddress = pd->entries[pdIndex] & PointerMask;
+        auto pt = reinterpret_cast<PT *>(reinterpret_cast<uint64_t>(ptPhysicalAddress) + offset);
+
+        return pt->entries[ptIndex] == 0;
+    }
+
     paging::available_virtual_address_range paging::FindAvailableVirtualAddressRange(state *state, uintptr_t start,
-                                                                uintptr_t end, size_t pageCount, size_t align) {
+                                                                                     uintptr_t end, size_t pageCount, size_t align) {
         threading::spinlock::scoped_lock lock (_findRangeLock, true);
         return FindAvailableVirtualAddressRangeUnlocked(state, start, end, pageCount, align);
     }
@@ -306,7 +320,7 @@ namespace piru::memory {
         size_t foundPages = 0;
 
         while (current < end) {
-            if (!IsMapped(state, current)) {
+            if (IsSlotFree(state, current)) {
                 foundPages++;
                 if (foundPages == pageCount) {
                     uintptr_t rangeStart = current - (pageCount - 1) * system::PageSize;
@@ -330,7 +344,7 @@ namespace piru::memory {
         return FindAvailableVirtualAddressRange(&_kernelState, start, end, count, align);
     }
 
-    void paging::Shootdown(uint64_t start, size_t pageCount) {
+    void paging::Shootdown(state *state, uint64_t start, size_t pageCount) {
         auto flags = threading::spinlock::AreInterruptsEnabled();
         asm volatile ("cli" ::: "memory");
 
@@ -344,6 +358,7 @@ namespace piru::memory {
         _shootdownRequest.start = start;
         _shootdownRequest.pageCount = pageCount;
         _shootdownRequest.pending = _shootdownCount;
+        _shootdownRequest.associatedState = state;
         _shootdownRequest.gen.store(newGen, std::memory_order::release);
 
         // Ping all other CPUs
@@ -363,6 +378,12 @@ namespace piru::memory {
         asm volatile ("invlpg (%0)" ::"r"(vaddr) : "memory");
     }
 
+    uint64_t paging::GetCR3() {
+        uint64_t out;
+        asm volatile ("mov %%cr3, %0;" :"=r"(out));
+        return out;
+    }
+
     void paging::ReloadCR3() {
         asm volatile ("mov %%cr3, %%rax; mov %%rax, %%cr3" ::: "rax", "memory");
     }
@@ -374,11 +395,19 @@ namespace piru::memory {
     void paging::HandleShootdown() {
         if (threading::spinlock::AreInterruptsEnabled()) PANIC("HandleShootdown with IF=1");
 
-        auto &state = kernel::GetInstance().GetCpu();
+        auto &k = kernel::GetInstance();
+        auto &state = k.GetCpu();
         auto gen = _shootdownRequest.gen.load(std::memory_order::acquire);
 
         if (state.lastShootdownGen == gen)
             return;
+
+        if ((uint64_t)_shootdownRequest.associatedState->pml4 != (GetCR3() & PointerMask) && _shootdownRequest.start < system::EndOfCanonical) {
+            // not applicable to us, act as if we did it anyway
+            state.lastShootdownGen = gen;
+            _shootdownRequest.pending.fetch_sub(1);
+            return;
+        }
 
         for (size_t i = 0; i < _shootdownRequest.pageCount; i++)
             InvalidateTlb(_shootdownRequest.start + (i * system::PageSize));
@@ -465,7 +494,7 @@ namespace piru::memory {
 
     bool paging::IsTableEmpty(const uint64_t *table) {
         for (size_t i = 0; i < 512; i++) {
-            if (table[i] & static_cast<uint64_t>(Flags::Present)) return false;
+            if (table[i] != 0) return false;
         }
         return true;
     }

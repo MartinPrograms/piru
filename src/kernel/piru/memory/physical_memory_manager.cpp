@@ -2,8 +2,11 @@
 #include <boot/limine_definitions.hpp>
 
 #include <logging.hpp>
+#include <config.hpp>
 
 namespace {
+    inline constexpr uint64_t MAGIC = 0xF4EEF4EEF4EEF4EE;
+
     inline bool IsPageSet(uint64_t *bitmap, size_t pageIndex) {
         size_t bitmapIndex = pageIndex / 64;
         if (bitmap[bitmapIndex] == UINT64_MAX) return true;
@@ -20,6 +23,27 @@ namespace {
         } else {
             bitmap[bitmapIndex] &= ~(1ULL << bitIndex);
         }
+    }
+
+    inline volatile uint64_t *PageWords(size_t pageIndex) {
+        return reinterpret_cast<volatile uint64_t *>(pageIndex * piru::system::PageSize + piru::boot::limine::hhdm_request.response->offset);
+    }
+
+    inline void Poison(size_t pageIndex) {
+        auto words = PageWords(pageIndex);
+        for (size_t i = 0; i < piru::system::PageSize / sizeof(uint64_t); i++)
+            words[i] = MAGIC;
+    }
+
+    inline bool VerifyPoison(size_t pageIndex) {
+        auto words = PageWords(pageIndex);
+        for (size_t i = 0; i < piru::system::PageSize / sizeof(uint64_t); i++) {
+            if (words[i] != MAGIC) {
+                LOG_ERROR("[pmm] UAF phys {} w{} = {}", (void *)(pageIndex * piru::system::PageSize), i, (void *)words[i]);
+                return false;
+            }
+        }
+        return true;
     }
 }
 
@@ -99,10 +123,17 @@ namespace piru::memory {
             if (!IsPageSet(_reserved, i)) {
                 _availablePageCount++;
                 SetPage(_allocated, i, false);
+
+                if constexpr (config::PoisonPMM)
+                    Poison(i);
             }
         }
 
-        LOG_INFO("Total pages: {} ({} MiB), free pages: {} ({} MiB)", _totalPageCount, (_totalPageCount * system::PageSize) / (1024 * 1024), _availablePageCount, (_availablePageCount * system::PageSize) / (1024 * 1024));
+        string_view isPoisoned = "";
+        if constexpr (config::PoisonPMM)
+            isPoisoned = " (poisoned)";
+
+        LOG_INFO("Total pages: {} ({} MiB), free pages: {} ({} MiB){}", _totalPageCount, (_totalPageCount * system::PageSize) / (1024 * 1024), _availablePageCount, (_availablePageCount * system::PageSize) / (1024 * 1024), isPoisoned);
     }
 
     void *physical_memory_manager::Allocate(size_t pageCount) {
@@ -126,6 +157,15 @@ namespace piru::memory {
                 }
 
                 _availablePageCount -= pageCount;
+
+                if constexpr (config::PoisonPMM) {
+                    for (size_t i = 0; i < pageCount; i++) {
+                        if (!VerifyPoison(i + startPage)) {
+                            PANIC("Failed to verify poison!");
+                        }
+                    }
+                }
+
                 return (void*)(startPage * system::PageSize);
             }
 
@@ -140,6 +180,10 @@ namespace piru::memory {
 
         for (size_t i = 0; i < pageCount; i++) {
             size_t pageIndex = ((uintptr_t)ptr / system::PageSize) + i;
+
+            if constexpr (config::PoisonPMM)
+                Poison(pageIndex);
+
             if (IsPageSet(_reserved, pageIndex)) PANIC("Attempted to free a reserved page");
             if (!IsPageSet(_allocated, pageIndex)) PANIC("Attempted to free an already freed page");
             SetPage(_allocated, pageIndex, false);
