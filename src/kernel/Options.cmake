@@ -17,8 +17,8 @@ endfunction()
 
 # Option variables
 option(PIRU_RUN_TESTS "Run sub-system self-tests at boot" ON)
-option(PIRU_TEST_PAGING_TLB "Run the (slow) TLB control test" OFF)
-option(PIRU_TEST_SMP "Run the smp (CallOn / CallOnAll / idle loop) tests at boot" OFF)
+option(PIRU_TEST_PAGING_TLB "Run the (slow) TLB control test" ON)
+option(PIRU_TEST_SMP "Run the smp (CallOn / CallOnAll / idle loop) tests at boot" ON)
 option(PIRU_POISON_PMM "Poison PMM memory (slow, scales with memory size), this adds protection against handing out non-freed pages (in cases of memory corruption, or other spooky stuff)" ON)
 set(PIRU_LOG_LEVEL "DEBUG" CACHE STRING "Minimum log level") # see definitions.hpp for valid input
 
