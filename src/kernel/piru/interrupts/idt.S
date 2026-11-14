@@ -261,7 +261,7 @@ mac_IRQStub 248
 mac_IRQStub 249
 mac_IRQStub 250
 mac_IRQStub 251
-// mac_IRQStub 252 // see heap_scheduler.S
+mac_IRQStub 252 // see heap_scheduler.S
 mac_IRQStub 253
 mac_IRQStub 254
 mac_IRQStub 255

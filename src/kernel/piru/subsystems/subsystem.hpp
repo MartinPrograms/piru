@@ -12,9 +12,17 @@ namespace piru::subsystems {
     };
 
     template<typename T>
-    concept IsSubsystem = requires {
+    concept IsSubsystem = requires(T& t) {
         { T::SUBSYSTEM_NAME } -> std::convertible_to<const char*>;
         { T::IS_REQUIRED } -> std::convertible_to<bool>;
+        { T::TEST_SUBSYSTEM } -> std::convertible_to<bool>;
+        { t.Initialize() } -> std::same_as<Result>;
+        { t.RunTests() } -> std::same_as<bool>;
+    };
+
+    template<typename T>
+    concept DeclaresSubsystem = requires {
+        { T::SUBSYSTEM_NAME } -> std::convertible_to<const char*>;
     };
 
     struct subsystem_constructor{};
@@ -29,6 +37,10 @@ namespace piru::subsystems {
         [[=subsystem_constructor_tag]] example_subsystem(some_other_subsystem& injectedSubsystem);
 
         Result Initialize();
+
+        // A testing function, if fails, runs a panic.
+        // True = success, false = failure
+        bool RunTests();
 
     private:
         some_other_subsystem& _injectedSubsystem;

@@ -143,6 +143,8 @@ namespace piru::memory {
             if (IsPageSet(_reserved, pageIndex)) PANIC("Attempted to free a reserved page");
             SetPage(_allocated, pageIndex, false);
         }
+
+        _availablePageCount += pageCount;
     }
 
     size_t physical_memory_manager::GetFreePageCount() const {

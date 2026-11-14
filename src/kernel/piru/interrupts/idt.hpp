@@ -40,6 +40,7 @@ namespace piru::interrupts {
         constexpr static uint8_t PANIC_VECTOR = 0xFF - 2;
         constexpr static uint8_t THREAD_SCHEDULER_VECTOR = 0xFF - 3;
         constexpr static uint8_t PAGING_TLB_SHOOTDOWN = 0xFF - 4;
+        constexpr static uint8_t SMP_CALL_ON_VECTOR = 0xFF - 5;
 
         void Initialize();
         void InitializeCpu();

@@ -6,8 +6,13 @@ namespace piru::threading {
     public:
         spinlock();
 
+        spinlock(const spinlock&) = delete;
+        spinlock &operator=(const spinlock&) = delete;
+
         bool lock(bool stopInterrupts);
         void unlock(bool restoreInterrupts);
+
+        bool try_lock();
 
         class scoped_lock {
         public:
@@ -25,6 +30,8 @@ namespace piru::threading {
             spinlock &_lock;
             bool _reenableInterrupts;
         };
+
+        static bool AreInterruptsEnabled();
 
     private:
         volatile bool _locked;

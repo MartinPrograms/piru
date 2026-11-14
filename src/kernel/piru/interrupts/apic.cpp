@@ -8,13 +8,10 @@ namespace piru::interrupts {
     void apic::Initialize(piru::memory::paging& paging, core::acpi &acpi) {
         if (!_lapicMmio) {
             uint64_t lapic = core::cpu::ReadMSR(core::cpu::IA32_APIC_BASE) & 0xFFFFF000;
-            uintptr_t mmioAddr = paging.FindAvailableVirtualAddressRangeKernel(1).start;
-            paging.MapPage(
-                kernel::GetInstance().GetCpu().pageState,
-                mmioAddr,
-                lapic,
+            uintptr_t mmioAddr = paging.MapAnywhereKernel(
+                lapic, 1,
                 memory::paging::Flags::CacheDisable | memory::paging::Flags::WriteThrough | memory::paging::Flags::ReadWrite
-            );
+            ).start;
 
             _lapicMmio = reinterpret_cast<uint32_t *>(mmioAddr);
             _lapicBase = lapic;
@@ -141,7 +138,7 @@ namespace piru::interrupts {
         return _lapicMmio[offset / 4];
     }
 
-    uint32_t* apic::_lapicMmio = 0;
+    volatile uint32_t* apic::_lapicMmio = 0;
     uint64_t apic::_lapicBase = 0;
     size_t apic::_localAPICNMIcount = 0;
     core::acpi::madt* apic::_madt = nullptr;

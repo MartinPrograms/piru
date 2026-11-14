@@ -4,14 +4,16 @@
 #include <cpp/fmt.hpp>
 #include <logging.hpp>
 
+#include "config.hpp"
 #include "boot/limine_definitions.hpp"
 #include "subsystems.hpp"
+#include "core/smp.hpp"
+#include "tests/paging_test.hpp"
+#include "tests/smp_test.hpp"
 
 void Trampoline(limine_mp_info* info) {
     piru::kernel::GetInstance().CpuInit(info->lapic_id);
 }
-
-std::atomic<bool> _schedulerReady{false};
 
 namespace piru {
     kernel & kernel::GetInstance() {
@@ -56,13 +58,11 @@ namespace piru {
 
             auto stackPageCount = ((uintptr_t)system::StackTop - (uintptr_t)system::StackBottom) / system::PageSize;
             auto physRsp0 = data.pmm.Allocate(stackPageCount);
-            auto virtRsp0 = data.paging.FindAvailableVirtualAddressRangeKernel(stackPageCount);
-            data.paging.MapRange(GetCpu().pageState, virtRsp0.start, (uintptr_t)physRsp0, stackPageCount, memory::paging::Flags::ReadWrite);
+            auto virtRsp0 = data.paging.MapAnywhereKernel((uintptr_t)physRsp0, stackPageCount, memory::paging::Flags::ReadWrite);
 
             auto faultStackPageCount = ((uintptr_t)system::DefaultFaultHandlerTop - (uintptr_t)system::DefaultFaultHandlerBottom) / system::PageSize;
             auto physIst1 = data.pmm.Allocate(faultStackPageCount);
-            auto virtIst1 = data.paging.FindAvailableVirtualAddressRangeKernel(faultStackPageCount);
-            data.paging.MapRange(GetCpu().pageState, virtIst1.start, (uintptr_t)physIst1, faultStackPageCount, memory::paging::Flags::ReadWrite);
+            auto virtIst1 = data.paging.MapAnywhereKernel((uintptr_t)physIst1, faultStackPageCount, memory::paging::Flags::ReadWrite);
 
             cpus[core->lapic_id].stackBase = virtRsp0.end;
             cpus[core->lapic_id].faultHandlerStackBase = virtIst1.end;
@@ -96,15 +96,16 @@ namespace piru {
         }
 
         LOG_DEBUG("CPU with ID: {} initialized successfully", cpuId);
+        asm volatile ("sti"); // SHOULD be done by the scheduler, but for now we do this here.
+        // already reloaded kernel page table above.
 
         auto flags = _initLock.lock(false);
         _initializedCount++;
         _initLock.unlock(flags);
 
+
         if (cpuId != _bsp) {
-            while (_schedulerReady.load(std::memory_order_acquire) == false) {
-                asm ("pause");
-            }
+            core::smp::Idle();
         }
     }
 
@@ -112,85 +113,13 @@ namespace piru {
         data.subsystem_manager.Initialize();
     }
 
-    struct MandelbrotJob {
-        int width = 400;
-        int height = 400;
-        int maxIterations = 25;
-        uint32_t* framebuffer = nullptr;
-
-        double minRe = -2.0;
-        double maxRe = 1.0;
-        double minIm = -1.2;
-        double maxIm = 1.2;
-
-        std::atomic<int> nextRow{0};
-    };
-
-    void RenderMandelbrotWorker(MandelbrotJob* job) {
-        double reFactor = (job->maxRe - job->minRe) / (job->width - 1);
-        double imFactor = (job->maxIm - job->minIm) / (job->height - 1);
-        double aspect = (double)job->width / (double)job->height;
-
-        while (true) {
-            // Fetch the next available row atomically
-            int y = job->nextRow.fetch_add(1, std::memory_order_relaxed);
-            if (y >= job->height) {
-                break; // All rows are being processed or finished
-            }
-
-            // Calculate the imaginary component for this specific row
-            double c_im = job->maxIm - y * imFactor;
-            uint32_t* rowBuffer = &job->framebuffer[y * job->width];
-
-            for (int x = 0; x < job->width; ++x) {
-                double c_re = job->minRe + (x * aspect) * reFactor;
-
-                double z_re = c_re;
-                double z_im = c_im;
-                int isInside = 1;
-                int n = 0;
-
-                for (n = 0; n < job->maxIterations; ++n) {
-                    double z_re2 = z_re * z_re;
-                    double z_im2 = z_im * z_im;
-
-                    if (z_re2 + z_im2 > 4.0) {
-                        isInside = 0;
-                        break;
-                    }
-
-                    z_im = 2.0 * z_re * z_im + c_im;
-                    z_re = z_re2 - z_im2 + c_re;
-                }
-
-                // Map iteration counts to a visible color scheme
-                if (isInside) {
-                    rowBuffer[x] = 0x00000000; // Black for the set interior
-                } else {
-                    // A smooth, fast procedural blue/cyan gradient
-                    uint8_t r = 0;
-                    uint8_t g = (n * 7) % 256;
-                    uint8_t b = (n * 13) % 256;
-
-                    // Assuming XRGB or ARGB 32-bit color format
-                    rowBuffer[x] = (r << 16) | (g << 8) | b;
-                }
-            }
-        }
-    }
-
-    void DisplayFramebuffer(MandelbrotJob* job, limine_framebuffer_response *framebuffer) {
-        for (int y = 0; y < job->height; ++y) {
-            for (int x = 0; x < job->width; ++x) {
-                uint32_t color = job->framebuffer[y * job->width + x];
-                ((uint32_t*)framebuffer->framebuffers[0]->address)[y * framebuffer->framebuffers[0]->pitch / 4 + x] = color;
-            }
-        }
-        LOG_DEBUG("Framebuffer displayed for job with dimensions {}x{}", job->width, job->height);
-    }
-
     void kernel::Start() {
+        if constexpr (config::RunTlbControlTest) tests::RunPagingControlTest();
         data.paging.EnableShootdown();
+        if constexpr (config::RunSmpTests) tests::RunSmpTests();
+        if constexpr (config::RunTlbControlTest) tests::RunPagingTests();
+
+        if constexpr (config::RunSubsystemSelfTests) data.subsystem_manager.Test();
     }
 
     struct kernel::cpu &kernel::GetCpu() {

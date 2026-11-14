@@ -46,12 +46,12 @@ namespace piru::interrupts {
     private:
         static void WriteRegister(uint32_t offset, uint32_t value);
         static uint32_t ReadRegister(uint32_t offset);
-        static uint32_t *_lapicMmio;
+        static volatile uint32_t *_lapicMmio;
         static uint64_t _lapicBase;
         static size_t _localAPICNMIcount;
         static core::acpi::madt *_madt;
 
-        bool _sleeping = false;
+        volatile bool _sleeping = false;
     };
 }
 

@@ -97,7 +97,9 @@ namespace {
         template for (constexpr auto member : std::define_static_array(std::meta::members_of(^^piru::subsystems, std::meta::access_context::unprivileged()))) {
             if constexpr (std::meta::is_type(member) && !std::meta::is_concept(member)) {
                 using T = typename[:member:];
-                if constexpr (piru::subsystems::IsSubsystem<T>) {
+
+                if constexpr (piru::subsystems::DeclaresSubsystem<T>) {
+                    static_assert(piru::subsystems::IsSubsystem<T>, "Type declares SUBSYSTEM_NAME but does not satisfy IsSubsystem");
                     subsystems.push_back(member);
                 }
             }
@@ -196,6 +198,16 @@ namespace {
             }
         }
     }
+
+    template<typename T>
+    bool TestSubsystem(SubsystemStorage& storage) {
+        auto& subsystem = storage.[:FindSelfMember<T>():];
+
+        if constexpr (T::TEST_SUBSYSTEM)
+            return subsystem.RunTests();
+
+        return true;
+    }
 }
 
 namespace piru::core {
@@ -223,6 +235,17 @@ namespace piru::core {
         template for (constexpr auto system : SubsystemMetaList) {
             using T = typename[:system:];
             (void)this->GetSubsystem<T>();   // instantiate only, don't execute
+        }
+    }
+
+    void subsystem_manager::Test() {
+        template for (constexpr auto system : SubsystemMetaList) {
+            using T = typename[:system:];
+            if (!TestSubsystem<T>(*(SubsystemStorage*)_storage)) {
+                PANIC("Subsystem {} failed self-test", piru::reflection::NameOf<T>());
+            } else {
+                LOG_DEBUG("Subsystem {} self-test success", piru::reflection::NameOf<T>());
+            }
         }
     }
 }

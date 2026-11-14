@@ -20,12 +20,12 @@ namespace piru::subsystems {
         };
 
         struct ALIGNED(32) slab {
-            slab *next;
-            void *addr;
-            uint16_t sizeClass;
-            uint16_t maxElementCount;
-            uint16_t allocatedCount;
-            uint64_t allocationMap[4]; // 256 entries, enough for a size class of 16.
+            slab *next{};
+            void *addr{};
+            uint16_t sizeClass{};
+            uint16_t maxElementCount{};
+            uint16_t allocatedCount{};
+            uint64_t allocationMap[4]{}; // 256 entries, enough for a size class of 16.
 
             [[nodiscard]] bool IsFree(size_t index) const {
                 return !(allocationMap[index / 64] & (1ULL << (index % 64)));
@@ -80,16 +80,19 @@ namespace piru::subsystems {
                 return nullptr;
             }
 
-            void Give(void *ptr) {
-                auto p = static_cast<std::byte*>(ptr);
-                auto max = static_cast<std::byte*>(addr) + (maxElementCount * sizeClass);
-                if (p < addr || p >= max)
-                    return;
+            // Returns false if ptr is not an element of this slab (out of range / misaligned) or was already free (double free).
+            [[nodiscard]] bool Give(void *ptr) {
+                if (!Has(ptr))
+                    return false;
 
-                size_t offset = p - static_cast<std::byte*>(addr);
+                size_t offset = static_cast<std::byte*>(ptr) - static_cast<std::byte*>(addr);
                 size_t index = offset / sizeClass;
+                if (IsFree(index))
+                    return false;
+
                 Set(index, false);
                 allocatedCount--;
+                return true;
             }
         };
 
@@ -97,14 +100,17 @@ namespace piru::subsystems {
             slab_allocator();
             ~slab_allocator();
 
-            static memory::paging::available_virtual_address_range GetVirtualAddress(
+            // Finds a free virtual range and maps phys there atomically (see paging::MapAnywhere).
+            static memory::paging::available_virtual_address_range MapPages(
                 memory::paging::state *pageState, bool higherHalf,
-                memory::paging *paging, size_t pageCount);
+                memory::paging *paging, uint64_t phys, size_t pageCount, size_t align);
 
             slab *AllocateSlab(size_t sizeClass, memory::paging::state *pageState, bool higherHalf);
             void FreeSlab(slab *slab, memory::paging::state *pageState);
 
         private:
+            static slab *InitHeaderPage(uintptr_t virt);
+
             slab *_memory;
             threading::spinlock _lock;
         };
@@ -118,6 +124,8 @@ namespace piru::subsystems {
                 size_t totalSmallAllocationSize;
                 size_t totalBigAllocations;
                 size_t totalBigAllocationSize;
+
+                bool operator==(const statistics & other) const;
             };
 
             void *Allocate(size_t size, size_t alignment = std::alignment_of_v<std::max_align_t>);
@@ -154,6 +162,7 @@ namespace piru::subsystems {
 
         static constexpr const char* SUBSYSTEM_NAME = "heap_allocator";
         static constexpr bool IS_REQUIRED = true;
+        static constexpr bool TEST_SUBSYSTEM = true;
 
         [[=subsystems::subsystem_constructor_tag]] heap_allocator();
 
@@ -161,6 +170,8 @@ namespace piru::subsystems {
 
         state* CreateState(string_view name, piru::memory::paging::state* pageState, bool higherHalf);
         void DestroyState(state* state);
+
+        bool RunTests();
 
     private:
         state _heapState; // this is the heap, for allocating states, that get handed out.

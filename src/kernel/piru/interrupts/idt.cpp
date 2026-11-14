@@ -2,6 +2,7 @@
 
 #include "kernel.hpp"
 #include "logging.hpp"
+#include "core/smp.hpp"
 
 extern "C" {
 
@@ -61,7 +62,11 @@ namespace piru::interrupts {
         });
 
         RegisterIRQHandler(PAGING_TLB_SHOOTDOWN, [](registers* regs) {
-            memory::paging::InvalidateTlb(kernel::GetInstance().data.paging.GetShootdownAddress());
+            memory::paging::IRQShootdown();
+        });
+
+        RegisterIRQHandler(SMP_CALL_ON_VECTOR, [](registers* regs) {
+            core::smp::CallOnVector();
         });
     }
 

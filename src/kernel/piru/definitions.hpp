@@ -25,6 +25,14 @@ namespace piru::constants {
 
 namespace piru::core {
     [[noreturn]] void Panic(const char* message);
+
+    enum class LogLevel {
+        DEBUG = 0,
+        INFO = 1,
+        WARNING = 2,
+        ERROR = 3,
+        FATAL = 5
+    };
 }
 
 namespace piru::system {

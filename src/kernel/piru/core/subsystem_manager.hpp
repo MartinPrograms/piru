@@ -7,6 +7,7 @@ namespace piru::core {
     class subsystem_manager {
     public:
         void Initialize();
+        void Test();
 
         template<typename T>
         USED T* GetSubsystem();

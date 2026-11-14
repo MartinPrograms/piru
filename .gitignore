@@ -2,3 +2,4 @@
 /build/
 /bin/
 /src/kernel/piru/subsystems.hpp
+/src/kernel/piru/config.hpp

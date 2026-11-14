@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cpp/math.hpp>
 
 namespace piru {
     // Depends on implementations of new/delete.

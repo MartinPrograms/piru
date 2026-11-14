@@ -48,6 +48,7 @@ namespace piru {
             interrupts::tss tss{};
             interrupts::gdt gdt{};
             memory::paging::state *pageState{};
+            uint64_t lastShootdownGen;
             interrupts::apic apic{};
         };
 

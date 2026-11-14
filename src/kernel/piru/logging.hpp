@@ -7,19 +7,16 @@
 #include <cpp/ANSI.hpp>
 #include <cpp/spinlock.hpp>
 
+#include "config.hpp"
+
 namespace piru::core {
     threading::spinlock &GetLogLock();
 
-    enum class LogLevel {
-        DEBUG = 0,
-        INFO = 1,
-        WARNING = 2,
-        ERROR = 3,
-        FATAL = 5
-    };
-
     template<LogLevel level, typename... Args>
     void LogFmt(string_view location, string_view fmt, Args&&... args) {
+        if constexpr ((int)level < (int)piru::config::ConsoleLogLevel)
+            return;
+
         threading::spinlock::scoped_lock lock(GetLogLock(), true);
 
         string_view color = ANSI::Colors::Foreground::White;

@@ -19,6 +19,7 @@ namespace piru::subsystems {
 
         static constexpr const char* SUBSYSTEM_NAME = "scheduler";
         static constexpr bool IS_REQUIRED = true;
+        static constexpr bool TEST_SUBSYSTEM = false;
 
         [[=subsystem_constructor_tag]] scheduler(heap_allocator& allocator);
 
@@ -26,6 +27,7 @@ namespace piru::subsystems {
         void Remove(uint64_t id);
 
         Result Initialize();
+        bool RunTests();
 
         void Run();
 

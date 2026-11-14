@@ -50,6 +50,10 @@ namespace piru::subsystems {
         return Result::SUCCESS;
     }
 
+    bool scheduler::RunTests() {
+        return true; // no tests for this subsystem.
+    }
+
     void scheduler::Run() {
         list<task> toExecute;
 

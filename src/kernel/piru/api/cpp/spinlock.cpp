@@ -1,20 +1,6 @@
 #include <cpp/spinlock.hpp>
 #include <definitions.hpp>
 
-bool AreInterruptsEnabled() {
-    uint64_t rflags;
-
-    asm volatile (
-        "pushfq\n\t"
-        "pop %0"
-        : "=rm" (rflags)
-        :
-        : "memory"
-    );
-
-    return (rflags & (1 << 9)) != 0;
-}
-
 namespace piru::threading {
     spinlock::spinlock() : _locked(false) {
         __atomic_store_n(&_locked, false, __ATOMIC_RELEASE);
@@ -44,11 +30,30 @@ namespace piru::threading {
         }
     }
 
+    bool spinlock::try_lock() {
+        bool expected = false;
+        return __atomic_compare_exchange_n(&_locked, &expected, true, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
+    }
+
     spinlock::scoped_lock::scoped_lock(spinlock &lock, bool stopInterrupts) : _lock(lock) {
         _reenableInterrupts = _lock.lock(stopInterrupts);
     }
 
     spinlock::scoped_lock::~scoped_lock() {
         _lock.unlock(_reenableInterrupts);
+    }
+
+    bool spinlock::AreInterruptsEnabled() {
+        uint64_t rflags;
+
+        asm volatile (
+            "pushfq\n\t"
+            "pop %0"
+            : "=rm" (rflags)
+            :
+            : "memory"
+        );
+
+        return (rflags & (1 << 9)) != 0;
     }
 }

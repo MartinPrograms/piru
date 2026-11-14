@@ -96,13 +96,10 @@ namespace piru::interrupts {
             }
             LOG_DEBUG("Found IOAPIC entry {}", i);
 
-            uintptr_t ioApicMmio = _paging.FindAvailableVirtualAddressRangeKernel(1).start;
-            _paging.MapPage(
-                kernel::GetInstance().GetCpu().pageState,
-                ioApicMmio,
-                entry->ioApicAddress,
+            uintptr_t ioApicMmio = _paging.MapAnywhereKernel(
+                entry->ioApicAddress, 1,
                 memory::paging::Flags::ReadWrite | memory::paging::Flags::CacheDisable | memory::paging::Flags::WriteThrough
-            );
+            ).start;
 
             _ioApic[i].Initialize(&_paging, (volatile uint32_t*)ioApicMmio, entry->globalSystemInterruptBase, entry->ioApicId);
         }
