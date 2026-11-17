@@ -15,7 +15,7 @@ namespace piru {
 
         list() : _memory(nullptr), _count(0), _capacity(0) {}
 
-        list(size_t capacity) {
+        list(size_t capacity) : _memory(nullptr), _count(0) {
             _capacity = capacity;
             Resize(_capacity);
         }
@@ -57,6 +57,10 @@ namespace piru {
                 _memory[i] = _memory[i + 1];
             }
             _count--;
+        }
+
+        void Clear() {
+            _count = 0;
         }
 
         [[nodiscard]] size_t Count() const {

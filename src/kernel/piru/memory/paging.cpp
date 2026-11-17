@@ -95,7 +95,7 @@ namespace piru::memory {
         state->pml4 = nullptr;
     }
 
-    void paging::MapPage(state *state, uint64_t vaddr, uint64_t paddr, Flags flags) {
+    void paging::MapPage(state *state, uint64_t vaddr, uint64_t paddr, Flags flags, bool includePresent) {
         if (vaddr & (system::PageSize - 1)) PANIC("Virtual address is not page-aligned!");
         if (paddr & (system::PageSize - 1)) PANIC("Physical address is not page-aligned!");
 
@@ -103,7 +103,7 @@ namespace piru::memory {
 
         auto offset = boot::limine::hhdm_request.response->offset;
 
-        uint64_t entryFlags = static_cast<uint64_t>(flags) | static_cast<uint64_t>(Flags::Present);
+        uint64_t entryFlags = static_cast<uint64_t>(flags) | (includePresent ? static_cast<uint64_t>(Flags::Present) : 0);
         auto directoryFlags = static_cast<uint64_t>(Flags::Present | Flags::ReadWrite | Flags::User);
 
         uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
@@ -151,6 +151,34 @@ namespace piru::memory {
 
     void paging::UnmapPage(state *state, uint64_t vaddr) {
         UnmapRange(state, vaddr, 1);
+    }
+
+    void paging::UnmapGuarded(state *state, uint64_t vaddr) {
+        {
+            threading::spinlock::scoped_lock lock(LockFor(state, vaddr), true);
+
+            uint32_t pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset;
+            ExtractPageTableIndices(vaddr, pml4Index, pdpIndex, pdIndex, ptIndex, pageOffset);
+
+            auto offset = boot::limine::hhdm_request.response->offset;
+
+            auto pml4 = reinterpret_cast<PML4 *>(reinterpret_cast<uint64_t>(state->pml4) + offset);
+            if (!(pml4->entries[pml4Index] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PML4 entry not present)!");
+
+            auto pdpPhysicalAddress = pml4->entries[pml4Index] & PointerMask;
+            auto pdp = reinterpret_cast<PDP *>(reinterpret_cast<uint64_t>(pdpPhysicalAddress) + offset);
+            if (!(pdp->entries[pdpIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PDP entry not present)!");
+
+            auto pdPhysicalAddress = pdp->entries[pdpIndex] & PointerMask;
+            auto pd = reinterpret_cast<PD *>(reinterpret_cast<uint64_t>(pdPhysicalAddress) + offset);
+            if (!(pd->entries[pdIndex] & static_cast<uint64_t>(Flags::Present))) PANIC("Attempted to unmap a virtual address that is not mapped (PD entry not present)!");
+
+            auto ptPhysicalAddress = pd->entries[pdIndex] & PointerMask;
+            auto pt = reinterpret_cast<PT *>(reinterpret_cast<uint64_t>(ptPhysicalAddress) + offset);
+            if (!(pt->entries[ptIndex] & static_cast<uint64_t>(Flags::Guard))) PANIC("Attempted to unmap a virtual address that is not marked as guarded!");
+
+            pt->entries[ptIndex] = 0;
+        }
     }
 
     void paging::MapRange(state *state, uint64_t vaddrStart, uint64_t paddrStart, size_t pageCount, Flags flags) {
@@ -304,8 +332,61 @@ namespace piru::memory {
         return MapAnywhere(&_kernelState, start, end, paddrStart, pageCount, flags, align);
     }
 
+    paging::available_virtual_address_range paging::MapAnywhereGuarded(state *state, uintptr_t start, uintptr_t end,
+                                                                       uint64_t paddrStart, size_t pageCount, Flags flags, GuardRegion guardRegion) {
+        size_t guardPages = 0;
+        if ((uint8_t)(guardRegion & GuardRegion::Start) != 0)
+            guardPages++;
+        if ((uint8_t)(guardRegion & GuardRegion::End) != 0)
+            guardPages++;
+
+        threading::spinlock::scoped_lock lock (_findRangeLock, true);
+        auto range = FindAvailableVirtualAddressRangeUnlocked(state, start, end, pageCount + guardPages, 0);
+        MapRange(state,
+            range.start + ((uint8_t)(guardRegion & GuardRegion::Start) != 0 ? system::PageSize : 0),
+            paddrStart,
+            pageCount,
+            flags
+        );
+
+        auto freeStart = range.start;
+        auto freeEnd = range.end;
+
+        if ((uint8_t)(guardRegion & GuardRegion::Start) != 0) {
+            MapPage(state, range.start, 0x0, Flags::Guard, false);
+            freeStart = range.start + system::PageSize;
+        }
+
+        if ((uint8_t)(guardRegion & GuardRegion::End) != 0){
+            MapPage(state, range.end - system::PageSize, 0x0, Flags::Guard, false);
+            freeEnd = range.end - system::PageSize;
+        }
+
+        return {freeStart, freeEnd};
+    }
+
+    paging::available_virtual_address_range paging::MapAnywhereGuardedKernel(uint64_t paddrStart, size_t pageCount,
+                                                                Flags flags, GuardRegion guardRegion) {
+        uintptr_t start = 0xFFFFFFFF80000000ULL;
+        uintptr_t end = 0xFFFFFFFFFFFFF000ULL;
+
+        return MapAnywhereGuarded(&_kernelState, start, end, paddrStart, pageCount, flags, guardRegion);
+    }
+
+    void paging::FreeGuardedRange(state *state, available_virtual_address_range range, GuardRegion guardRegion) {
+        UnmapRange(state, range.start, (range.end - range.start) / system::PageSize);
+        if ((uint8_t)(guardRegion & GuardRegion::Start) != 0)
+            UnmapGuarded(state, range.start - system::PageSize);
+        if ((uint8_t)(guardRegion & GuardRegion::End) != 0)
+            UnmapGuarded(state, range.end);
+    }
+
+    void paging::FreeGuardedRangeKernel(available_virtual_address_range range, GuardRegion guardRegion) {
+        FreeGuardedRange(&_kernelState, range, guardRegion);
+    }
+
     paging::available_virtual_address_range paging::FindAvailableVirtualAddressRangeUnlocked(state *state, uintptr_t start,
-                                                                uintptr_t end, size_t pageCount, size_t alignv) {
+                                                                                             uintptr_t end, size_t pageCount, size_t alignv) {
         auto align = math::Max(alignv, system::PageSize);
 
         if (pageCount == 0) {
@@ -374,6 +455,10 @@ namespace piru::memory {
         _shootdownLock.unlock(flags);
     }
 
+    paging::state * paging::KernelPageTable() {
+        return &_kernelState;
+    }
+
     void paging::InvalidateTlb(uint64_t vaddr) {
         asm volatile ("invlpg (%0)" ::"r"(vaddr) : "memory");
     }
@@ -419,6 +504,8 @@ namespace piru::memory {
     void paging::EnableShootdown() {
         _shootdownEnabled = true;
         _shootdownCount = (int)kernel::GetInstance().GetCpuCount() - 1; // minus 1 for the sender
+
+        threading::spinlock::SetRelaxHook(&paging::IRQShootdown);
     }
 
     void paging::ReserveHigherHalfPML4Slots(state *state, uint64_t higherHalf) const {

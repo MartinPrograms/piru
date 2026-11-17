@@ -33,6 +33,11 @@ namespace piru::memory {
             NoExecute = 1ULL << 63,
         };
 
+        enum class GuardRegion : uint8_t {
+            Start = 1 << 0,
+            End = 1 << 1,
+        };
+
         struct state {
             PML4 *pml4{};
             threading::spinlock lock{};
@@ -54,8 +59,9 @@ namespace piru::memory {
         // The state must not be active (in CR3) on any CPU.
         void DestroyPageState(state *state);
 
-        void MapPage(state *state, uint64_t vaddr, uint64_t paddr, Flags flags);
+        void MapPage(state *state, uint64_t vaddr, uint64_t paddr, Flags flags, bool includePresent = true);
         void UnmapPage(state *state, uint64_t vaddr);
+        void UnmapGuarded(state *state, uint64_t vaddr);
 
         void MapRange(state *state, uint64_t vaddrStart, uint64_t paddrStart, size_t pageCount, Flags flags);
         void UnmapRange(state *state, uint64_t vaddrStart, size_t pageCount);
@@ -72,7 +78,15 @@ namespace piru::memory {
         available_virtual_address_range MapAnywhere(state *state, uintptr_t start, uintptr_t end, uint64_t paddrStart, size_t pageCount, Flags flags, size_t align = 0);
         available_virtual_address_range MapAnywhereKernel(uint64_t paddrStart, size_t pageCount, Flags flags, size_t align = 0);
 
+        // Same as MapAnywhere, but adds a page at the start and/or end
+        available_virtual_address_range MapAnywhereGuarded(state *state, uintptr_t start, uintptr_t end, uint64_t paddrStart, size_t pageCount, Flags flags, GuardRegion guardRegion);
+        available_virtual_address_range MapAnywhereGuardedKernel(uint64_t paddrStart, size_t pageCount, Flags flags, GuardRegion guardRegion);
+        void FreeGuardedRange(state *state, available_virtual_address_range range, GuardRegion guardRegion);
+        void FreeGuardedRangeKernel(available_virtual_address_range range, GuardRegion guardRegion);
+
         void Shootdown(state *state, uint64_t start, size_t pageCount);
+
+        paging::state * KernelPageTable();
 
         static void InvalidateTlb(uint64_t vaddr);
         static uint64_t GetCR3();
@@ -113,6 +127,14 @@ namespace piru::memory {
 
     constexpr paging::Flags operator&(paging::Flags a, paging::Flags b) {
         return static_cast<paging::Flags>(static_cast<uint64_t>(a) & static_cast<uint64_t>(b));
+    }
+
+    constexpr paging::GuardRegion operator|(paging::GuardRegion a, paging::GuardRegion b) {
+        return static_cast<paging::GuardRegion>(static_cast<uint64_t>(a) | static_cast<uint64_t>(b));
+    }
+
+    constexpr paging::GuardRegion operator&(paging::GuardRegion a, paging::GuardRegion b) {
+        return static_cast<paging::GuardRegion>(static_cast<uint64_t>(a) & static_cast<uint64_t>(b));
     }
 }
 

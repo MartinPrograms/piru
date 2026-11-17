@@ -3,6 +3,7 @@
 #include "kernel.hpp"
 #include "logging.hpp"
 #include "core/smp.hpp"
+#include "subsystems/thread_scheduler.hpp"
 
 extern "C" {
 
@@ -61,11 +62,27 @@ namespace piru::interrupts {
             }
         });
 
+        RegisterIRQHandler(THREAD_SCHEDULER_VECTOR, [](registers* regs) {
+            kernel::GetInstance().data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->OnTick();
+        });
+
+        RegisterPostIrqHandler(THREAD_SCHEDULER_VECTOR, [] {
+            kernel::GetInstance().data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->PreemptIfNeeded();
+        });
+
+        RegisterIRQHandler(THREAD_RESCHEDULE_VECTOR, [](registers* regs) {
+            // FOOLED!
+        });
+
         RegisterIRQHandler(PAGING_TLB_SHOOTDOWN, [](registers* regs) {
             memory::paging::IRQShootdown();
         });
 
         RegisterIRQHandler(SMP_CALL_ON_VECTOR, [](registers* regs) {
+            // FOOLED! Hahaha my tricks catch you yet again!
+        });
+
+        RegisterPostIrqHandler(SMP_CALL_ON_VECTOR, []() {
             core::smp::CallOnVector();
         });
     }
@@ -108,6 +125,10 @@ namespace piru::interrupts {
         }
 
         kernel::GetInstance().GetCpu().apic.EOI();
+
+        if (_postHandler[irq]) {
+            _postHandler[irq]();
+        }
     }
 
     void idt::SetIDTEntry(uint16_t vec, uint64_t isr, uint8_t i) {

@@ -43,6 +43,7 @@ namespace piru {
 
         // per cpu core
         struct cpu {
+            uint32_t id;
             uint64_t stackBase;
             uint64_t faultHandlerStackBase;
             interrupts::tss tss{};
@@ -54,6 +55,7 @@ namespace piru {
 
         data data;
         cpu cpus[system::MaxCpuCount];
+
         cpu& GetCpu();
 
         [[nodiscard]] size_t GetCpuCount() {
@@ -81,6 +83,7 @@ namespace piru {
         size_t _cpuCount{1};
         size_t _initializedCount{0};
         threading::spinlock _initLock{};
+        std::atomic<bool> _schedulerReady{false};
     };
 } // piru
 

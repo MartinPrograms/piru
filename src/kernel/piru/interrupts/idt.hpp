@@ -35,12 +35,14 @@ namespace piru::interrupts {
 
         using exception_handler = void(*)(registers *);
         using irq_handler = void(*)(registers *);
+        using post_irq_handler = void(*)();
 
         constexpr static uint8_t APIC_SLEEP_VECTOR = 0xFF - 1;
         constexpr static uint8_t PANIC_VECTOR = 0xFF - 2;
         constexpr static uint8_t THREAD_SCHEDULER_VECTOR = 0xFF - 3;
         constexpr static uint8_t PAGING_TLB_SHOOTDOWN = 0xFF - 4;
         constexpr static uint8_t SMP_CALL_ON_VECTOR = 0xFF - 5;
+        constexpr static uint8_t THREAD_RESCHEDULE_VECTOR = 0xFF - 6;
 
         void Initialize();
         void InitializeCpu();
@@ -54,6 +56,12 @@ namespace piru::interrupts {
             _irqHandlers[irq] = handler;
         }
 
+        // Runs after EOI, so you can do stuff after an IRQ, while being able to receive more.
+        void RegisterPostIrqHandler(uint8_t irq, post_irq_handler handler) {
+            threading::spinlock::scoped_lock lock(_lock, true);
+            _postHandler[irq] = handler;
+        }
+
         void RegisterExceptionHandler(uint8_t exception, exception_handler handler) {
             threading::spinlock::scoped_lock lock(_lock, true);
             _exceptionHandlers[exception] = handler;
@@ -62,6 +70,11 @@ namespace piru::interrupts {
         void RemoveIRQHandler(uint8_t irq) {
             threading::spinlock::scoped_lock lock(_lock, true);
             _irqHandlers[irq] = nullptr;
+        }
+
+        void RemovePostIrqHandler(uint8_t irq) {
+            threading::spinlock::scoped_lock lock(_lock, true);
+            _postHandler[irq] = nullptr;
         }
 
         void RemoveExceptionHandler(uint8_t exception) {
@@ -75,6 +88,7 @@ namespace piru::interrupts {
         idt_pointer _idtPointer{};
         exception_handler _exceptionHandlers[32]{};
         irq_handler _irqHandlers[256]{};
+        post_irq_handler _postHandler[256]{};
         uint8_t _allocatedVectors[32]{}; // 8 irqs per uint8
 
         void SetIDTEntry(uint16_t vec, uint64_t p, uint8_t i);

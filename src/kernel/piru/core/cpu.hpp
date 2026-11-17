@@ -2,6 +2,7 @@
 #define PIRU_CPU_HPP
 
 #include <definitions.hpp>
+#include <atomic>
 
 namespace piru::core {
     class cpu {
@@ -26,12 +27,17 @@ namespace piru::core {
         bool CpuId(uint64_t leaf, uint64_t *eax, uint64_t *ebx, uint64_t *ecx, uint64_t *edx);
         bool HasInvariantTSC();
 
+        void PreemptDisable();
+        void PreemptEnable();
+        bool PreemptEnabled();
+
     private:
         char _cpuName[49] = "\0";
         uint8_t _cpuNameLength = 0;
         bool _useXSave[system::MaxCpuCount]{};
         uint64_t _xsaveMask[system::MaxCpuCount]{};
         uint64_t _fpuStateSize[system::MaxCpuCount]{};
+        std::atomic<uint32_t> _preemptDisableCount[system::MaxCpuCount]{};
     };
 }
 

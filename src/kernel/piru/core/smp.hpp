@@ -12,9 +12,7 @@ namespace piru::core {
         using CallFunction = void(*)(void* data);
         using WaitType = std::atomic<int>*;
 
-        // This is just here to EOI, empty on purpose
         static void CallOnVector();
-        [[noreturn]] static void Idle();
         static void CallOn(uint32_t cpu, CallFunction func, void* data, WaitType wait = nullptr);
         static void CallOnAll(CallFunction func, void* data, bool wait = false, bool self = false);
 
@@ -33,6 +31,9 @@ namespace piru::core {
         };
 
         static CpuQueue _queues[system::MaxCpuCount];
+        static std::atomic<bool> _draining[system::MaxCpuCount];
+
+        static void DrainQueue(CpuQueue &queue, SmpQueue &copiedQueue);
     };
 }
 

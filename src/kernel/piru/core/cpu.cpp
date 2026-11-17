@@ -138,15 +138,15 @@ namespace piru::core {
     }
 
     uint64_t cpu::ReadMSR(uint32_t msr) {
-        uint64_t out;
-        asm volatile ("rdmsr" : "=a"(out) : "c"(msr));
-        return out;
+        uint32_t lo, hi;
+        asm volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+        return ((uint64_t)hi << 32) | lo;
     }
 
     uint64_t cpu::ReadTSC() {
-        uint64_t out;
-        asm volatile ("rdtsc" : "=A"(out));
-        return out;
+        uint32_t lo, hi;
+        asm volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+        return ((uint64_t)hi << 32) | lo;
     }
 
     void cpu::SaveFpuState(void *fpuState) {
@@ -251,5 +251,23 @@ void cpu::RestoreFpuState(void *fpuState) {
         uint64_t edx = 0;
         CpuId(0x80000007, nullptr, nullptr, nullptr, &edx);
         return (edx & (1ULL << 8)) != 0;
+    }
+
+    void cpu::PreemptDisable() {
+        bool wasEnabled = threading::spinlock::AreInterruptsEnabled();
+        asm volatile ("cli");
+        _preemptDisableCount[interrupts::gdt::GetCpuId()].fetch_add(1);
+        if (wasEnabled) asm volatile ("sti");
+    }
+
+    void cpu::PreemptEnable() {
+        if (PreemptEnabled())
+            PANIC("Tried enabling preempt when preempts were already enabled");
+
+        _preemptDisableCount[interrupts::gdt::GetCpuId()].fetch_sub(1);
+    }
+
+    bool cpu::PreemptEnabled() {
+        return _preemptDisableCount[interrupts::gdt::GetCpuId()].load() == 0;
     }
 }

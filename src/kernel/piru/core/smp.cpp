@@ -3,51 +3,65 @@
 #include "kernel.hpp"
 #include "logging.hpp"
 #include "interrupts/gdt.hpp"
+#include "subsystems/thread_scheduler.hpp"
 
 namespace piru::core {
     smp::CpuQueue smp::_queues[piru::system::MaxCpuCount];
+    std::atomic<bool> smp::_draining[system::MaxCpuCount];
 
-    void smp::CallOnVector() {
+    void smp::DrainQueue(CpuQueue &queue, SmpQueue &copiedQueue) {
+        auto cpuCore = interrupts::gdt::GetCpuId();
 
+        {
+            threading::spinlock::scoped_lock lock(queue.lock, false);
+            while (!queue.queue.IsEmpty()) {
+                QueuedOp out{};
+                if (!queue.queue.TryPop(out))
+                    PANIC("Failed to pop queued function for cpu {}", cpuCore);
+
+                if (!copiedQueue.TryPush(out))
+                    PANIC("Failed to push queued function for cpu {}", cpuCore);
+            }
+        }
     }
 
-    void smp::Idle() {
+    void smp::CallOnVector() {
         auto cpuCore = interrupts::gdt::GetCpuId();
+        if (_draining[cpuCore].load())
+            return; // the outer CallOnVector on this cpu keeps draining until the queue is empty
+
+        auto &cpu = kernel::GetInstance().data.cpu;
+
+        _draining[cpuCore].store(true);
+
+        cpu.PreemptDisable();
+
+        auto& queue = _queues[cpuCore];
 
         while (true) {
             asm volatile ("cli");
 
-            auto& queue = _queues[cpuCore];
             SmpQueue copiedQueue;
-
-            {
-                threading::spinlock::scoped_lock lock(queue.lock, false);
-                while (!queue.queue.IsEmpty()) {
-                    QueuedOp out{};
-                    if (!queue.queue.TryPop(out))
-                        PANIC("Failed to pop queued function for cpu {}", cpuCore);
-
-                    if (!copiedQueue.TryPush(out))
-                        PANIC("Failed to push queued function for cpu {}", cpuCore);
-                }
-            }
+            DrainQueue(queue, copiedQueue);
 
             if (copiedQueue.IsEmpty())
-                asm volatile ("sti; hlt");
-            else {
-                asm volatile ("sti");
+                break;
 
-                while (!copiedQueue.IsEmpty()) {
-                    QueuedOp out{};
-                    if (!copiedQueue.TryPop(out))
-                        PANIC("Failed to pop queued function for cpu {}", cpuCore);
+            asm volatile ("sti");
 
-                    out.func(out.data);
-                    if (out.wait)
-                        out.wait->fetch_sub(1);
-                }
+            while (!copiedQueue.IsEmpty()) {
+                QueuedOp out{};
+                if (!copiedQueue.TryPop(out))
+                    PANIC("Failed to pop queued function for cpu {}", cpuCore);
+
+                out.func(out.data);
+                if (out.wait)
+                    out.wait->fetch_sub(1);
             }
         }
+
+        cpu.PreemptEnable();
+        _draining[cpuCore].store(false);
     }
 
     void smp::CallOn(uint32_t cpu, CallFunction func, void *data, WaitType wait) {

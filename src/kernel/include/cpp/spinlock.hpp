@@ -4,6 +4,8 @@
 namespace piru::threading {
     class spinlock {
     public:
+        using relax_hook = void(*)();
+
         spinlock();
 
         spinlock(const spinlock&) = delete;
@@ -32,6 +34,7 @@ namespace piru::threading {
         };
 
         static bool AreInterruptsEnabled();
+        static void SetRelaxHook(relax_hook hook); /// must NOT take a lock. Otherwise a lock will wait on a lock, which waits on this lock which then waits!
 
     private:
         volatile bool _locked;

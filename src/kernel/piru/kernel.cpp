@@ -86,6 +86,8 @@ namespace piru {
 
         LOG_DEBUG("Initializing CPU with ID: {}", cpuId);
 
+        cpus[cpuId].id = cpuId;
+
         if (cpuId != _bsp) {
             cpus[cpuId].tss.Initialize(cpuId, (void*)cpus[cpuId].stackBase, (void*)cpus[cpuId].faultHandlerStackBase);
             cpus[cpuId].gdt.Initialize(cpuId, &cpus[cpuId].tss);
@@ -95,17 +97,19 @@ namespace piru {
             cpus[cpuId].apic.Initialize(data.paging, data.acpi);
         }
 
+        asm volatile ("sti");
+
         LOG_DEBUG("CPU with ID: {} initialized successfully", cpuId);
-        asm volatile ("sti"); // SHOULD be done by the scheduler, but for now we do this here.
-        // already reloaded kernel page table above.
 
         auto flags = _initLock.lock(false);
         _initializedCount++;
         _initLock.unlock(flags);
 
-
         if (cpuId != _bsp) {
-            core::smp::Idle();
+            while (!_schedulerReady.load())
+                asm volatile ("sti; pause");
+
+            data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>()->StartCore();
         }
     }
 
@@ -120,6 +124,12 @@ namespace piru {
         if constexpr (config::RunTlbControlTest) tests::RunPagingTests();
 
         if constexpr (config::RunSubsystemSelfTests) data.subsystem_manager.Test();
+
+        // Scheduler specific stuff!
+        auto sched = data.subsystem_manager.GetSubsystem<subsystems::thread_scheduler>();
+
+        _schedulerReady.store(true); // Activate other cores!
+        sched->Start();
     }
 
     struct kernel::cpu &kernel::GetCpu() {
