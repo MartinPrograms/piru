@@ -128,9 +128,6 @@ namespace piru::subsystems {
                 return;
             }
         }
-
-        // No thread found
-        LOG_WARNING("Thread {} not found", tid);
     }
 
     void thread_scheduler::Yield() {

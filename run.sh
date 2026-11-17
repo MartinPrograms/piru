@@ -24,6 +24,7 @@ qemu-system-x86_64 $DEBUG_FLAGS \
   -serial file:logs/qemu.log \
   -cpu Haswell,+avx,+xsave,+invtsc,vendor=QEMU_VirtSys \
   -smp 8 \
+  -machine q35 \
   -d int,cpu_reset \
   -m 128M \
   -hda HDD.img \
